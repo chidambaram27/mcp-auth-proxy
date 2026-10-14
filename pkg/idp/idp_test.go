@@ -28,6 +28,10 @@ import (
 )
 
 func setupTestServer(t *testing.T) (*httptest.Server, repository.Repository, string) {
+	return setupTestServerWithBranding(t, Branding{})
+}
+
+func setupTestServerWithBranding(t *testing.T, branding Branding) (*httptest.Server, repository.Repository, string) {
 	// Create temp directory and repository
 	tmpDir, err := os.MkdirTemp("", "idp_test_*")
 	require.NoError(t, err)
@@ -72,7 +76,7 @@ func setupTestServer(t *testing.T) (*httptest.Server, repository.Repository, str
 	require.NoError(t, err)
 
 	logger, _ := zap.NewDevelopment()
-	idpRouter, err := NewIDPRouter(repo, privKey, logger, "http://localhost:8080", secret[:], authRouter)
+	idpRouter, err := NewIDPRouter(repo, privKey, logger, "http://localhost:8080", secret[:], authRouter, branding)
 	require.NoError(t, err)
 
 	idpRouter.SetupRoutes(router)
