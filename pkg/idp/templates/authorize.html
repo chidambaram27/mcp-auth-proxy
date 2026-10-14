@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Authorize access - {{.ServerLabel}}</title>
+    <style>
+      body {
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+        margin: 0;
+        padding: 1rem;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-sizing: border-box;
+        color: #333;
+      }
+      .card {
+        background: white;
+        padding: 2.5rem;
+        border-radius: 12px;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+        max-width: 440px;
+        width: 100%;
+        box-sizing: border-box;
+      }
+      .icon {
+        font-size: 2.5rem;
+        text-align: center;
+      }
+      .logo {
+        text-align: center;
+        margin-bottom: 0.5rem;
+      }
+      .logo img {
+        max-height: 56px;
+        max-width: 100%;
+      }
+      h1 {
+        font-size: 1.5rem;
+        font-weight: 600;
+        text-align: center;
+        margin: 0.5rem 0 1.5rem;
+      }
+      .lead {
+        text-align: center;
+        line-height: 1.5;
+        margin: 0 0 1.5rem;
+      }
+      .lead strong {
+        word-break: break-word;
+      }
+      .details {
+        border: 1px solid #e1e5e9;
+        border-radius: 8px;
+        margin: 0 0 1.5rem;
+        padding: 0;
+      }
+      .row {
+        display: flex;
+        gap: 1rem;
+        padding: 0.75rem 1rem;
+        border-top: 1px solid #e1e5e9;
+      }
+      .row:first-child {
+        border-top: none;
+      }
+      .row dt {
+        flex: 0 0 6.5rem;
+        color: #777;
+        font-size: 0.85rem;
+        padding-top: 0.1rem;
+      }
+      .row dd {
+        margin: 0;
+        flex: 1;
+        min-width: 0;
+        word-break: break-word;
+        font-size: 0.95rem;
+      }
+      .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 0.9rem;
+      }
+      .hint {
+        display: block;
+        color: #777;
+        font-size: 0.8rem;
+        margin-top: 0.2rem;
+      }
+      .badge {
+        display: inline-block;
+        font-size: 0.75rem;
+        padding: 0.1rem 0.5rem;
+        border-radius: 999px;
+        margin-top: 0.3rem;
+      }
+      .badge.local {
+        background: #e8f5e9;
+        color: #2e7d32;
+      }
+      .badge.remote {
+        background: #fff4e5;
+        color: #a35a00;
+      }
+      .warning {
+        background: #fff8e1;
+        border: 1px solid #ffe08a;
+        border-radius: 8px;
+        padding: 0.75rem 1rem;
+        font-size: 0.85rem;
+        line-height: 1.45;
+        margin: 0 0 1.5rem;
+      }
+      .authorize-button {
+        width: 100%;
+        padding: 12px 20px;
+        background: linear-gradient(45deg, #667eea, #764ba2);
+        color: white;
+        border: none;
+        border-radius: 8px;
+        font-size: 16px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: transform 0.2s, box-shadow 0.2s;
+      }
+      .authorize-button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 20px rgba(102, 126, 234, 0.3);
+      }
+      .footer {
+        text-align: center;
+        color: #999;
+        font-size: 0.8rem;
+        margin-top: 1rem;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      {{if .LogoSrc}}
+      <div class="logo"><img src="{{.LogoSrc}}" alt="" /></div>
+      {{else if not .HideIcon}}
+      <div class="icon" aria-hidden="true">🔐</div>
+      {{end}}
+      <h1>Authorize access</h1>
+
+      {{if .Banner}}
+      <div class="lead">{{.Banner}}</div>
+      {{else if not .BannerDisabled}}
+      <p class="lead">
+        {{if .ClientName}}<strong>“{{.ClientName}}”</strong>{{else}}An
+        application{{end}} wants to access
+        <strong class="mono">{{.ServerLabel}}</strong> on your behalf.
+      </p>
+      {{end}}
+
+      <dl class="details">
+        {{if .ClientName}}
+        <div class="row">
+          <dt>Application</dt>
+          <dd>
+            {{.ClientName}}
+            <span class="hint">Name provided by the application</span>
+          </dd>
+        </div>
+        {{end}} {{if .User}}
+        <div class="row">
+          <dt>Signed in as</dt>
+          <dd>{{.User}}</dd>
+        </div>
+        {{end}}
+        <div class="row">
+          <dt>Redirects to</dt>
+          <dd>
+            <span class="mono">{{.RedirectHost}}</span>
+            {{if .RedirectIsLocal}}
+            <span class="badge local">An app on this computer</span>
+            {{else}}
+            <span class="badge remote">A website</span>
+            {{end}}
+          </dd>
+        </div>
+        <div class="row">
+          <dt>Access</dt>
+          <dd>
+            Use this MCP server as you{{if .Scopes}}
+            <span class="hint">Scopes: <span class="mono">{{range $i, $s := .Scopes}}{{if $i}}, {{end}}{{$s}}{{end}}</span></span>{{end}}
+          </dd>
+        </div>
+      </dl>
+
+      <div class="warning" role="note">
+        Only continue if you started this sign-in yourself, from your own MCP
+        client, and you recognise the redirect above. Otherwise close this tab.
+      </div>
+
+      <form method="post">
+        <button class="authorize-button" type="submit">Authorize</button>
+      </form>
+
+      {{if .Footer}}
+      <div class="footer">{{.Footer}}</div>
+      {{else if not .FooterDisabled}}
+      <p class="footer">Close this tab to cancel.</p>
+      {{end}}
+    </main>
+  </body>
+</html>

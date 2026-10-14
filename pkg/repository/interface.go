@@ -22,6 +22,12 @@ type Repository interface {
 
 type DynamicClientStorage interface {
 	RegisterClient(ctx context.Context, client fosite.Client) error
+	// SetClientName stores the client_name sent at dynamic registration. It is
+	// display-only (shown on the consent page) and kept apart from the fosite
+	// client so the stored client format does not change.
+	SetClientName(ctx context.Context, clientID string, name string) error
+	// GetClientName returns "" when no name was stored.
+	GetClientName(ctx context.Context, clientID string) (string, error)
 }
 
 type AuthorizeRequestStorage interface {
