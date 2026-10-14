@@ -167,6 +167,10 @@ type proxyRunnerFunc func(
 	httpStreamingOnly bool,
 	headerMapping map[string]string,
 	headerMappingBase string,
+	authorizeServerName string,
+	authorizeLogo string,
+	authorizeBanner string,
+	authorizeFooter string,
 ) error
 
 func main() {
@@ -220,6 +224,10 @@ func newRootCommand(run proxyRunnerFunc) *cobra.Command {
 	var headerMappingBase string
 	var httpStreamingOnly bool
 	var trustedProxies string
+	var authorizeServerName string
+	var authorizeLogo string
+	var authorizeBanner string
+	var authorizeFooter string
 
 	rootCmd := &cobra.Command{
 		Use: "mcp-warp",
@@ -292,6 +300,10 @@ func newRootCommand(run proxyRunnerFunc) *cobra.Command {
 				httpStreamingOnly,
 				headerMappingMap,
 				headerMappingBase,
+				authorizeServerName,
+				authorizeLogo,
+				authorizeBanner,
+				authorizeFooter,
 			); err != nil {
 				panic(err)
 			}
@@ -350,6 +362,12 @@ func newRootCommand(run proxyRunnerFunc) *cobra.Command {
 	rootCmd.Flags().BoolVar(&httpStreamingOnly, "http-streaming-only", getEnvBoolWithDefault("HTTP_STREAMING_ONLY", false), "Reject SSE (GET) requests and keep the backend in HTTP streaming-only mode")
 	rootCmd.Flags().StringVar(&headerMapping, "header-mapping", getEnvWithDefault("HEADER_MAPPING", ""), "Comma-separated mapping of JSON pointer paths to header names (e.g., /email:X-Forwarded-Email,/preferred_username:X-Forwarded-User)")
 	rootCmd.Flags().StringVar(&headerMappingBase, "header-mapping-base", getEnvWithDefault("HEADER_MAPPING_BASE", "/userinfo"), "JSON pointer base path for header mapping claims lookup (e.g., /userinfo or /)")
+
+	// Consent (authorize) page branding
+	rootCmd.Flags().StringVar(&authorizeServerName, "authorize-server-name", getEnvWithDefault("AUTHORIZE_SERVER_NAME", ""), "Friendly name shown on the consent page instead of the external host (e.g. \"Trino (staging)\")")
+	rootCmd.Flags().StringVar(&authorizeLogo, "authorize-logo", getEnvWithDefault("AUTHORIZE_LOGO", ""), "Logo for the consent page: a file path (PNG/JPG/SVG/GIF/WebP, inlined at startup) or an http(s) URL. Use \"-\" to hide the default icon.")
+	rootCmd.Flags().StringVar(&authorizeBanner, "authorize-banner", getEnvWithDefault("AUTHORIZE_BANNER", ""), "Custom (HTML) banner shown above the request details on the consent page. Use \"-\" to hide the default message.")
+	rootCmd.Flags().StringVar(&authorizeFooter, "authorize-footer", getEnvWithDefault("AUTHORIZE_FOOTER", ""), "Custom (HTML) footer shown at the bottom of the consent page. Use \"-\" to hide the default footer.")
 
 	return rootCmd
 }

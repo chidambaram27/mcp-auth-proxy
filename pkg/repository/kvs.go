@@ -182,6 +182,21 @@ func (r *kvsRepository) GetClient(ctx context.Context, id string) (fosite.Client
 	return client.ToFositeClient(), nil
 }
 
+func (r *kvsRepository) SetClientName(ctx context.Context, clientID string, name string) error {
+	return r.create(ctx, "client_name-"+clientID, name)
+}
+
+func (r *kvsRepository) GetClientName(ctx context.Context, clientID string) (string, error) {
+	var name string
+	if err := r.get(ctx, "client_name-"+clientID, &name); err != nil {
+		if errors.Is(err, fosite.ErrNotFound) {
+			return "", nil
+		}
+		return "", err
+	}
+	return name, nil
+}
+
 // ClientAssertionJWTValid returns an error if the JTI is
 // known or the DB check failed and nil if the JTI is not known.
 func (r *kvsRepository) ClientAssertionJWTValid(ctx context.Context, jti string) error {

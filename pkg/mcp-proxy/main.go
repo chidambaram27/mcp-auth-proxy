@@ -81,6 +81,10 @@ func Run(
 	httpStreamingOnly bool,
 	headerMapping map[string]string,
 	headerMappingBase string,
+	authorizeServerName string,
+	authorizeLogo string,
+	authorizeBanner string,
+	authorizeFooter string,
 ) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -297,7 +301,11 @@ func Run(
 	if err != nil {
 		return fmt.Errorf("failed to create auth router: %w", err)
 	}
-	idpRouter, err := idp.NewIDPRouter(repo, privKey, logger, externalURL, secret, authRouter)
+	branding, err := idp.LoadBranding(authorizeServerName, authorizeLogo, authorizeBanner, authorizeFooter)
+	if err != nil {
+		return fmt.Errorf("failed to load consent page branding: %w", err)
+	}
+	idpRouter, err := idp.NewIDPRouter(repo, privKey, logger, externalURL, secret, authRouter, branding)
 	if err != nil {
 		return fmt.Errorf("failed to create IDP router: %w", err)
 	}
