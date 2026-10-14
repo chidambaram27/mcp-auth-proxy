@@ -3,9 +3,12 @@ package idp
 import (
 	"context"
 	"crypto/rsa"
+	"embed"
 	"encoding/base64"
 	"encoding/json"
+	"html/template"
 	"math/big"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -23,15 +26,20 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+//go:embed templates/*
+var templateFS embed.FS
+
 type IDPRouter struct {
-	repo        repository.Repository
-	privKey     *rsa.PrivateKey
-	logger      *zap.Logger
-	externalURL string
-	hasher      fosite.Hasher
-	provider    fosite.OAuth2Provider
-	signer      *jwt.DefaultSigner
-	authRouter  *auth.AuthRouter
+	repo              repository.Repository
+	privKey           *rsa.PrivateKey
+	logger            *zap.Logger
+	externalURL       string
+	hasher            fosite.Hasher
+	provider          fosite.OAuth2Provider
+	signer            *jwt.DefaultSigner
+	authRouter        *auth.AuthRouter
+	authorizeTemplate *template.Template
+	branding          Branding
 }
 
 func NewIDPRouter(
@@ -41,6 +49,7 @@ func NewIDPRouter(
 	externalURL string,
 	secret []byte,
 	authRouter *auth.AuthRouter,
+	branding Branding,
 ) (*IDPRouter, error) {
 	hasher := &fosite.BCrypt{
 		Config: &fosite.Config{
@@ -62,15 +71,22 @@ func NewIDPRouter(
 	}
 	provider, signer := customCompose(config, repo, privKey)
 
+	authorizeTemplate, err := template.ParseFS(templateFS, "templates/authorize.html")
+	if err != nil {
+		return nil, err
+	}
+
 	return &IDPRouter{
-		repo:        repo,
-		privKey:     privKey,
-		logger:      logger,
-		externalURL: externalURL,
-		hasher:      hasher,
-		provider:    provider,
-		signer:      signer,
-		authRouter:  authRouter,
+		repo:              repo,
+		privKey:           privKey,
+		logger:            logger,
+		externalURL:       externalURL,
+		hasher:            hasher,
+		provider:          provider,
+		signer:            signer,
+		authRouter:        authRouter,
+		authorizeTemplate: authorizeTemplate,
+		branding:          branding,
 	}, nil
 }
 
@@ -103,6 +119,7 @@ const (
 	OauthAuthorizationServerEndpoint = "/.well-known/oauth-authorization-server"
 	JWKSEndpoint                     = "/.well-known/jwks.json"
 	sessionKeyAuthorizeRequestIDs    = "idp_authorize_request_ids"
+	maxClientNameLength              = 100
 )
 
 func (a *IDPRouter) SetupRoutes(router gin.IRouter) {
@@ -158,13 +175,120 @@ func (a *IDPRouter) handleAuth(c *gin.Context) {
 }
 
 func (a *IDPRouter) handleAuthorizationReturnForm(c *gin.Context) {
+	ctx := c.Request.Context()
 	arID := c.Param("ar_id")
-	if !hasAuthorizeRequestID(sessions.Default(c), arID) {
+	session := sessions.Default(c)
+	if !hasAuthorizeRequestID(session, arID) {
 		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "invalid authorization session"})
 		return
 	}
 
-	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(`<!doctype html><html><body><form method="post"><button type="submit">Authorize</button></form></body></html>`))
+	ar, err := a.repo.GetAuthorizeRequest(ctx, arID)
+	if err != nil {
+		a.logger.Error("Failed to get authorize requester", zap.Error(err))
+		c.AbortWithStatusJSON(500, gin.H{"error": "Internal Server Error"})
+		return
+	}
+
+	clientName, err := a.repo.GetClientName(ctx, ar.GetClient().GetID())
+	if err != nil {
+		// Display-only; render the page without it.
+		a.logger.Warn("Failed to get client name", zap.Error(err))
+	}
+
+	data := authorizePageData{
+		ClientName:     clientName,
+		ServerHost:     hostOf(a.externalURL),
+		ServerName:     a.branding.ServerName,
+		User:           sessionUser(session),
+		Scopes:         ar.GetRequestedScopes(),
+		LogoSrc:        a.branding.logoURL(),
+		HideIcon:       a.branding.logoDisabled,
+		Banner:         a.branding.effectiveBanner(),
+		BannerDisabled: a.branding.bannerDisabled(),
+		Footer:         a.branding.effectiveFooter(),
+		FooterDisabled: a.branding.footerDisabled(),
+	}
+	if redirectURI := ar.GetRedirectURI(); redirectURI != nil {
+		data.RedirectHost = redirectURI.Host
+		data.RedirectIsLocal = isLoopbackHost(redirectURI.Hostname())
+		if data.RedirectHost == "" {
+			// Custom-scheme redirect (e.g. cursor://...): show the scheme.
+			data.RedirectHost = redirectURI.Scheme + ":"
+		}
+	}
+
+	c.Header("Cache-Control", "no-store")
+	c.Header("X-Frame-Options", "DENY")
+	c.Header("Content-Security-Policy", a.branding.contentSecurityPolicy())
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	c.Status(http.StatusOK)
+	if err := a.authorizeTemplate.Execute(c.Writer, data); err != nil {
+		a.logger.Error("Failed to render authorize page", zap.Error(err))
+	}
+}
+
+type authorizePageData struct {
+	ClientName      string
+	ServerHost      string
+	ServerName      string
+	User            string
+	RedirectHost    string
+	RedirectIsLocal bool
+	Scopes          []string
+	// LogoSrc is a safe <img src> value (data URI or http(s) URL) resolved
+	// at startup from trusted operator config; empty means no logo image.
+	LogoSrc template.URL
+	// HideIcon suppresses the built-in fallback icon (set when the operator
+	// disabled the logo with "-").
+	HideIcon bool
+	// Banner and Footer are operator-supplied HTML, trusted and rendered
+	// unescaped (same contract as oauth2-proxy's --banner/--footer).
+	Banner         template.HTML
+	BannerDisabled bool
+	Footer         template.HTML
+	FooterDisabled bool
+}
+
+// ServerLabel is the friendly server name when set, otherwise the host.
+func (d authorizePageData) ServerLabel() string {
+	if d.ServerName != "" {
+		return d.ServerName
+	}
+	return d.ServerHost
+}
+
+func hostOf(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return rawURL
+	}
+	return u.Host
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// sessionUser prefers the email from the provider's userinfo, falling back to
+// the user ID. The password provider's placeholder ID is not shown.
+func sessionUser(session sessions.Session) string {
+	if userInfoJSON, ok := session.Get(auth.SessionKeyUserInfo).(string); ok && userInfoJSON != "" {
+		var userInfo map[string]any
+		if json.Unmarshal([]byte(userInfoJSON), &userInfo) == nil {
+			if email, ok := userInfo["email"].(string); ok && email != "" {
+				return email
+			}
+		}
+	}
+	if userID, ok := session.Get(auth.SessionKeyUserID).(string); ok && userID != auth.PasswordUserID {
+		return userID
+	}
+	return ""
 }
 
 func (a *IDPRouter) handleAuthorizationReturn(c *gin.Context) {
@@ -389,6 +513,15 @@ func (a *IDPRouter) handleRegister(c *gin.Context) {
 		a.logger.Error("Failed to register client", zap.String("client_id", clientID), zap.Error(err))
 		c.JSON(500, gin.H{"error": "server_error", "error_description": err.Error()})
 		return
+	}
+	if name := strings.TrimSpace(req.ClientName); name != "" {
+		if r := []rune(name); len(r) > maxClientNameLength {
+			name = string(r[:maxClientNameLength])
+		}
+		if err := a.repo.SetClientName(ctx, clientID, name); err != nil {
+			// Display-only; the client is already usable without it.
+			a.logger.Warn("Failed to store client name", zap.String("client_id", clientID), zap.Error(err))
+		}
 	}
 
 	registrationClientURI, err := url.JoinPath(RegistrationEndpoint, clientID)
