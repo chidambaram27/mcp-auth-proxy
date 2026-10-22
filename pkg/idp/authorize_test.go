@@ -241,6 +241,40 @@ func TestAuthorizePageInlinesFileLogo(t *testing.T) {
 	require.Contains(t, csp, "img-src data:", "CSP allows data: for the inlined logo")
 }
 
+// Browsers apply form-action to the redirect after the Authorize POST, so the
+// CSP must allow the client's callback origin or the code is never delivered.
+func TestAuthorizePageCSPAllowsRedirectOrigin(t *testing.T) {
+	for redirectURI, want := range map[string]string{
+		"http://127.0.0.1:19876/mcp/oauth/callback":             "form-action 'self' http://127.0.0.1:19876;",
+		"https://chat.example.com/api/mcp/trino/oauth/callback": "form-action 'self' https://chat.example.com;",
+		"http://localhost:3000/callback":                        "form-action 'self' http://localhost:3000;",
+	} {
+		server, _, _ := setupTestServer(t)
+		jar, _ := cookiejar.New(nil)
+		client := &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+		_, csp := renderWithClient(t, client, server.URL, "opencode", redirectURI)
+		require.Contains(t, csp, want, redirectURI)
+	}
+}
+
+func TestRedirectCSPSource(t *testing.T) {
+	for raw, want := range map[string]string{
+		"http://127.0.0.1:19876/callback":        "http://127.0.0.1:19876",
+		"https://chat.example.com/cb?x=1":        "https://chat.example.com",
+		"HTTPS://Chat.Example.com/cb":            "https://Chat.Example.com",
+		"cursor://anysphere.cursor-retrieval/cb": "cursor://anysphere.cursor-retrieval",
+		"com.example.app:/oauth/callback":        "com.example.app:",
+		"http://[::1]:3000/callback":             "http:",
+	} {
+		u, err := url.Parse(raw)
+		require.NoError(t, err)
+		require.Equal(t, want, redirectCSPSource(u), raw)
+	}
+	require.Equal(t, "", redirectCSPSource(nil))
+	require.Equal(t, "", redirectCSPSource(&url.URL{Scheme: "http;script-src", Host: "x"}))
+	require.Equal(t, "http:", redirectCSPSource(&url.URL{Scheme: "http", Host: "a.com; script-src *"}))
+}
+
 func TestAuthorizePageDisabledLogo(t *testing.T) {
 	branding, err := LoadBranding("", "-", "", "")
 	require.NoError(t, err)
