@@ -209,6 +209,7 @@ func (a *IDPRouter) handleAuthorizationReturnForm(c *gin.Context) {
 		Footer:         a.branding.effectiveFooter(),
 		FooterDisabled: a.branding.footerDisabled(),
 	}
+	formActionSource := ""
 	if redirectURI := ar.GetRedirectURI(); redirectURI != nil {
 		data.RedirectHost = redirectURI.Host
 		data.RedirectIsLocal = isLoopbackHost(redirectURI.Hostname())
@@ -216,11 +217,12 @@ func (a *IDPRouter) handleAuthorizationReturnForm(c *gin.Context) {
 			// Custom-scheme redirect (e.g. cursor://...): show the scheme.
 			data.RedirectHost = redirectURI.Scheme + ":"
 		}
+		formActionSource = redirectCSPSource(redirectURI)
 	}
 
 	c.Header("Cache-Control", "no-store")
 	c.Header("X-Frame-Options", "DENY")
-	c.Header("Content-Security-Policy", a.branding.contentSecurityPolicy())
+	c.Header("Content-Security-Policy", a.branding.contentSecurityPolicy(formActionSource))
 	c.Header("Content-Type", "text/html; charset=utf-8")
 	c.Status(http.StatusOK)
 	if err := a.authorizeTemplate.Execute(c.Writer, data); err != nil {
