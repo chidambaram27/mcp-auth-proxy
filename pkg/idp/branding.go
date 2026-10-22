@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -129,13 +130,44 @@ func logoMediaType(path string) (string, error) {
 }
 
 // contentSecurityPolicy builds the consent page CSP, widening img-src only for
-// the configured logo source.
-func (b Branding) contentSecurityPolicy() string {
+// the configured logo source. Browsers apply form-action to the redirects that
+// follow a form submission, so the client's redirect URI must be allowed too:
+// with form-action 'self' alone, the 303 to the client's callback is blocked
+// and the authorization code is never delivered. formActionSource is the CSP
+// source for that redirect URI (see redirectCSPSource); empty allows 'self'
+// only.
+func (b Branding) contentSecurityPolicy(formActionSource string) string {
 	imgSrc := "'none'"
 	if !b.logoDisabled && b.logoSrc != "" && b.logoCSPSource != "" {
 		imgSrc = b.logoCSPSource
 	}
-	return "default-src 'none'; style-src 'unsafe-inline'; img-src " + imgSrc + "; form-action 'self'; frame-ancestors 'none'"
+	formAction := "'self'"
+	if formActionSource != "" {
+		formAction += " " + formActionSource
+	}
+	return "default-src 'none'; style-src 'unsafe-inline'; img-src " + imgSrc + "; form-action " + formAction + "; frame-ancestors 'none'"
+}
+
+var (
+	cspSchemePattern = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9+.-]*$`)
+	cspHostPattern   = regexp.MustCompile(`^[a-zA-Z0-9.-]+(:[0-9]+)?$`)
+)
+
+// redirectCSPSource returns the CSP source expression matching a redirect
+// URI: "scheme://host[:port]" when the host is a valid CSP host-source, the
+// bare scheme ("cursor:") for custom-scheme or IPv6 redirects, and "" when
+// the URI cannot be expressed safely. The redirect URI is client-registered
+// (DCR), so anything that could inject CSP syntax is rejected rather than
+// escaped.
+func redirectCSPSource(u *url.URL) string {
+	if u == nil || !cspSchemePattern.MatchString(u.Scheme) {
+		return ""
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if u.Host != "" && cspHostPattern.MatchString(u.Host) {
+		return scheme + "://" + u.Host
+	}
+	return scheme + ":"
 }
 
 // logoURL returns the <img src> as a template.URL. The value is resolved at
