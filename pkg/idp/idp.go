@@ -3,8 +3,11 @@ package idp
 import (
 	"context"
 	"crypto/rsa"
+	"embed"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"html/template"
 	"math/big"
 	"net/http"
 	"net/url"
@@ -32,6 +35,43 @@ type IDPRouter struct {
 	provider    fosite.OAuth2Provider
 	signer      *jwt.DefaultSigner
 	authRouter  *auth.AuthRouter
+
+	authorizeTemplate *template.Template
+	logoURL           string
+	consentCSP        string
+}
+
+//go:embed templates/authorize.html
+var authorizeTemplateFS embed.FS
+
+// authorizeCSP builds the consent page CSP. img-src is opened only to the
+// logo's origin. form-action is deliberately not set: browsers apply it to
+// the redirect that follows the form POST, which would block the 303 to the
+// client's callback.
+func authorizeCSP(logoURL string) string {
+	imgSrc := "'none'"
+	if logoURL != "" {
+		u, _ := url.Parse(logoURL)
+		imgSrc = u.Scheme + "://" + u.Host
+	}
+	return "default-src 'none'; style-src 'unsafe-inline'; img-src " + imgSrc + "; frame-ancestors 'none'"
+}
+
+// validateLogoURL accepts "" (no logo) or an absolute http(s) URL whose host
+// is a plain CSP host-source.
+func validateLogoURL(logoURL string) error {
+	if logoURL == "" {
+		return nil
+	}
+	u, err := url.Parse(logoURL)
+	if err != nil {
+		return fmt.Errorf("invalid authorize logo URL: %w", err)
+	}
+	if (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.User != nil ||
+		strings.ContainsAny(u.Host, " ;,'\"") {
+		return fmt.Errorf("authorize logo URL must be an absolute http(s) URL, got %q", logoURL)
+	}
+	return nil
 }
 
 func NewIDPRouter(
@@ -41,7 +81,15 @@ func NewIDPRouter(
 	externalURL string,
 	secret []byte,
 	authRouter *auth.AuthRouter,
+	logoURL string,
 ) (*IDPRouter, error) {
+	if err := validateLogoURL(logoURL); err != nil {
+		return nil, err
+	}
+	authorizeTemplate, err := template.ParseFS(authorizeTemplateFS, "templates/authorize.html")
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse authorize template: %w", err)
+	}
 	hasher := &fosite.BCrypt{
 		Config: &fosite.Config{
 			HashCost: bcrypt.DefaultCost,
@@ -71,6 +119,10 @@ func NewIDPRouter(
 		provider:    provider,
 		signer:      signer,
 		authRouter:  authRouter,
+
+		authorizeTemplate: authorizeTemplate,
+		logoURL:           logoURL,
+		consentCSP:        authorizeCSP(logoURL),
 	}, nil
 }
 
@@ -164,7 +216,26 @@ func (a *IDPRouter) handleAuthorizationReturnForm(c *gin.Context) {
 		return
 	}
 
-	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(`<!doctype html><html><body><form method="post"><button type="submit">Authorize</button></form></body></html>`))
+	c.Header("Cache-Control", "no-store")
+	c.Header("X-Frame-Options", "DENY")
+	c.Header("Content-Security-Policy", a.consentCSP)
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	c.Status(http.StatusOK)
+	data := struct {
+		LogoURL    string
+		ServerHost string
+	}{a.logoURL, hostOf(a.externalURL)}
+	if err := a.authorizeTemplate.Execute(c.Writer, data); err != nil {
+		a.logger.Error("Failed to render authorize page", zap.Error(err))
+	}
+}
+
+func hostOf(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return rawURL
+	}
+	return u.Host
 }
 
 func (a *IDPRouter) handleAuthorizationReturn(c *gin.Context) {

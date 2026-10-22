@@ -81,6 +81,7 @@ func Run(
 	httpStreamingOnly bool,
 	headerMapping map[string]string,
 	headerMappingBase string,
+	authorizeLogoURL string,
 ) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -297,7 +298,7 @@ func Run(
 	if err != nil {
 		return fmt.Errorf("failed to create auth router: %w", err)
 	}
-	idpRouter, err := idp.NewIDPRouter(repo, privKey, logger, externalURL, secret, authRouter)
+	idpRouter, err := idp.NewIDPRouter(repo, privKey, logger, externalURL, secret, authRouter, authorizeLogoURL)
 	if err != nil {
 		return fmt.Errorf("failed to create IDP router: %w", err)
 	}

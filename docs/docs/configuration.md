@@ -187,6 +187,7 @@ openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048
 | `--proxy-headers`               | `PROXY_HEADERS`               | -           | Comma-separated list of headers to add when proxying requests (format: Header1:Value1,Header2:Value2) |
 | `--header-mapping`              | `HEADER_MAPPING`              | -           | Comma-separated mapping of JSON pointer paths to header names (e.g., `/email:X-Forwarded-Email`)      |
 | `--header-mapping-base`         | `HEADER_MAPPING_BASE`         | `/userinfo` | JSON pointer base path for header mapping claims lookup (e.g., `/userinfo` or `/`)                    |
+| `--authorize-logo-url`          | `AUTHORIZE_LOGO_URL`          | -           | Optional http(s) URL of a logo shown on the consent (authorize) page                                  |
 | `--http-streaming-only`         | `HTTP_STREAMING_ONLY`         | `false`     | Reject SSE (GET) requests and keep the backend operating in HTTP streaming-only mode                  |
 | `--trusted-proxies`             | `TRUSTED_PROXIES`             | -           | Comma-separated list of trusted proxies (IP addresses or CIDR ranges)                                 |
 
