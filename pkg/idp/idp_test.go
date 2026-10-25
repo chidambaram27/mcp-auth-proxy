@@ -32,6 +32,10 @@ func setupTestServer(t *testing.T) (*httptest.Server, repository.Repository, str
 }
 
 func setupTestServerWithBranding(t *testing.T, branding Branding) (*httptest.Server, repository.Repository, string) {
+	return setupTestServerWith(t, branding, DefaultTokenLifespans())
+}
+
+func setupTestServerWith(t *testing.T, branding Branding, lifespans TokenLifespans) (*httptest.Server, repository.Repository, string) {
 	// Create temp directory and repository
 	tmpDir, err := os.MkdirTemp("", "idp_test_*")
 	require.NoError(t, err)
@@ -76,7 +80,7 @@ func setupTestServerWithBranding(t *testing.T, branding Branding) (*httptest.Ser
 	require.NoError(t, err)
 
 	logger, _ := zap.NewDevelopment()
-	idpRouter, err := NewIDPRouter(repo, privKey, logger, "http://localhost:8080", secret[:], authRouter, branding)
+	idpRouter, err := NewIDPRouter(repo, privKey, logger, "http://localhost:8080", secret[:], authRouter, branding, lifespans)
 	require.NoError(t, err)
 
 	idpRouter.SetupRoutes(router)
