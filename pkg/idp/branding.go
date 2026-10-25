@@ -154,17 +154,19 @@ var (
 )
 
 // redirectCSPSource returns the CSP source expression matching a redirect
-// URI: "scheme://host[:port]" when the host is a valid CSP host-source, the
-// bare scheme ("cursor:") for custom-scheme or IPv6 redirects, and "" when
-// the URI cannot be expressed safely. The redirect URI is client-registered
-// (DCR), so anything that could inject CSP syntax is rejected rather than
-// escaped.
+// URI: "scheme://host[:port]" for http(s) URIs whose host is a valid CSP
+// host-source, otherwise the bare scheme ("cursor:", "http:" for IPv6). Browsers
+// do not match host-sources against custom schemes (Chrome blocks
+// "cursor://host" even though the redirect is exactly that), so custom schemes
+// always use the scheme-source. Returns "" when the URI cannot be expressed
+// safely. The redirect URI is client-registered (DCR), so anything that could
+// inject CSP syntax is rejected rather than escaped.
 func redirectCSPSource(u *url.URL) string {
 	if u == nil || !cspSchemePattern.MatchString(u.Scheme) {
 		return ""
 	}
 	scheme := strings.ToLower(u.Scheme)
-	if u.Host != "" && cspHostPattern.MatchString(u.Host) {
+	if (scheme == "http" || scheme == "https") && u.Host != "" && cspHostPattern.MatchString(u.Host) {
 		return scheme + "://" + u.Host
 	}
 	return scheme + ":"

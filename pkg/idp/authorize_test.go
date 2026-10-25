@@ -262,7 +262,9 @@ func TestRedirectCSPSource(t *testing.T) {
 		"http://127.0.0.1:19876/callback":        "http://127.0.0.1:19876",
 		"https://chat.example.com/cb?x=1":        "https://chat.example.com",
 		"HTTPS://Chat.Example.com/cb":            "https://Chat.Example.com",
-		"cursor://anysphere.cursor-retrieval/cb": "cursor://anysphere.cursor-retrieval",
+		"cursor://anysphere.cursor-retrieval/cb": "cursor:",
+		"vscode://vscode.github-authentication/": "vscode:",
+		"CURSOR://Host/cb":                       "cursor:",
 		"com.example.app:/oauth/callback":        "com.example.app:",
 		"http://[::1]:3000/callback":             "http:",
 	} {
