@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/sigbit/mcp-auth-proxy/v2/pkg/idp"
 	"github.com/sigbit/mcp-auth-proxy/v2/pkg/proxy"
 	"github.com/stretchr/testify/require"
 )
@@ -50,6 +51,7 @@ func TestRun_NormalizesExternalURLTrailingSlash(t *testing.T) {
 				false, "", "", nil, nil, "", false,
 				[]string{"http://example.com"}, false, nil, "/userinfo",
 				"", "", "", "",
+				idp.DefaultTokenLifespans(),
 			)
 
 			if tt.wantErr {
@@ -125,6 +127,7 @@ func TestRun_PassesHTTPStreamingOnlyToProxyRouter(t *testing.T) {
 		"",
 		"",
 		"",
+		idp.DefaultTokenLifespans(),
 	)
 
 	require.Error(t, err)

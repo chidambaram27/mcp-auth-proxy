@@ -172,6 +172,24 @@ An unusable `--authorize-logo` (missing, oversized or unsupported file, or a non
 --authorize-footer "Questions? Reach out in <strong>#support</strong>."
 ```
 
+### Token Lifespan Options
+
+Lifetimes of the tokens issued by the built-in authorization server to MCP clients. Values are Go durations (`90s`, `15m`, `1h`, `720h`; no `d` unit) and must be positive.
+
+| Option                      | Environment Variable      | Default          | Description                                                |
+| --------------------------- | ------------------------- | ---------------- | ---------------------------------------------------------- |
+| `--access-token-lifespan`   | `ACCESS_TOKEN_LIFESPAN`   | `24h`            | Lifetime of access tokens (JWT `exp`, `expires_in`)        |
+| `--refresh-token-lifespan`  | `REFRESH_TOKEN_LIFESPAN`  | `720h` (30 days) | Lifetime of refresh tokens                                 |
+| `--authorize-code-lifespan` | `AUTHORIZE_CODE_LIFESPAN` | `15m`            | Lifetime of authorization codes (consent → token exchange) |
+
+Access tokens are self-contained JWTs and are accepted until they expire, so `ACCESS_TOKEN_LIFESPAN` bounds how long a user keeps access after being removed at the identity provider. Every refresh issues a new refresh token with a fresh `REFRESH_TOKEN_LIFESPAN`, so the refresh token lifespan limits idle time, not the total session length.
+
+```bash title="Example"
+--access-token-lifespan 1h \
+--refresh-token-lifespan 168h \
+--authorize-code-lifespan 5m
+```
+
 ### Server Options
 
 | Option         | Environment Variable | Default  | Description                  |
