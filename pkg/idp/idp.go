@@ -351,7 +351,7 @@ func (a *IDPRouter) handleAuthorizationReturn(c *gin.Context) {
 		}
 		// RFC 6749 4.1.2.1: tell the client the user declined, so it can stop
 		// waiting instead of hanging until the user closes the tab.
-		a.provider.WriteAuthorizeError(ctx, c.Writer, ar, fosite.ErrAccessDenied.WithDescription("The user denied the request."))
+		a.provider.WriteAuthorizeError(ctx, c.Writer, ar, fosite.ErrAccessDenied.WithDescription("The user denied the request.").WithHint("The user chose Deny on the consent page."))
 		return
 	}
 

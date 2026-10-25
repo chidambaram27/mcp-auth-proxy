@@ -481,6 +481,7 @@ func TestAuthorizePageDenyRedirectsWithAccessDenied(t *testing.T) {
 	require.Equal(t, "localhost:3000", cb.Host)
 	require.Equal(t, "access_denied", cb.Query().Get("error"))
 	require.Equal(t, "deny-state-123", cb.Query().Get("state"))
+	require.Equal(t, "The user denied the request. The user chose Deny on the consent page.", cb.Query().Get("error_description"))
 	require.Empty(t, cb.Query().Get("code"))
 
 	// The authorize request is consumed: approving afterwards is refused.
