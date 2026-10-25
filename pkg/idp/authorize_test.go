@@ -163,6 +163,29 @@ func TestRegisterTruncatesClientName(t *testing.T) {
 	require.Len(t, []rune(name), maxClientNameLength)
 }
 
+func TestSanitizeClientName(t *testing.T) {
+	for in, want := range map[string]string{
+		"opencode":                      "opencode",
+		"  Claude   Code ":              "Claude Code",
+		"opencode\u202e lmth.exe\u202c": "opencode lmth.exe",
+		"a\u200bb\u2066c\u2069\ufeffd":  "abcd",
+		"line\nbreak\ttab\x00nul":       "line break tabnul",
+		"Clïent 🔐 数据 Ωμέγα — ✅":         "Clïent 🔐 数据 Ωμέγα — ✅",
+		"\u202e\u202c":                  "",
+	} {
+		require.Equal(t, want, sanitizeClientName(in), "%q", in)
+	}
+}
+
+func TestRegisterStripsBidiFromClientName(t *testing.T) {
+	server, _, _ := setupTestServer(t)
+
+	body := renderAuthorizePage(t, server.URL, "opencode\u202e lmth.exe\u202c", "http://localhost:3000/callback")
+
+	require.Contains(t, body, "opencode lmth.exe")
+	require.NotContains(t, body, "\u202e")
+}
+
 func TestIsLoopbackHost(t *testing.T) {
 	for host, want := range map[string]bool{
 		"localhost":        true,
