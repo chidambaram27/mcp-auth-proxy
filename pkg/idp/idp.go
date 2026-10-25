@@ -211,12 +211,7 @@ func (a *IDPRouter) handleAuthorizationReturnForm(c *gin.Context) {
 	}
 	formActionSource := ""
 	if redirectURI := ar.GetRedirectURI(); redirectURI != nil {
-		data.RedirectHost = redirectURI.Host
-		data.RedirectIsLocal = isLoopbackHost(redirectURI.Hostname())
-		if data.RedirectHost == "" {
-			// Custom-scheme redirect (e.g. cursor://...): show the scheme.
-			data.RedirectHost = redirectURI.Scheme + ":"
-		}
+		data.RedirectHost, data.RedirectKind = describeRedirect(redirectURI)
 		formActionSource = redirectCSPSource(redirectURI)
 	}
 
@@ -231,13 +226,15 @@ func (a *IDPRouter) handleAuthorizationReturnForm(c *gin.Context) {
 }
 
 type authorizePageData struct {
-	ClientName      string
-	ServerHost      string
-	ServerName      string
-	User            string
-	RedirectHost    string
-	RedirectIsLocal bool
-	Scopes          []string
+	ClientName   string
+	ServerHost   string
+	ServerName   string
+	User         string
+	RedirectHost string
+	// RedirectKind is "local" (loopback http), "app" (custom scheme, handled
+	// by an installed application) or "remote" (any other http(s) host).
+	RedirectKind string
+	Scopes       []string
 	// LogoSrc is a safe <img src> value (data URI or http(s) URL) resolved
 	// at startup from trusted operator config; empty means no logo image.
 	LogoSrc template.URL
@@ -266,6 +263,21 @@ func hostOf(rawURL string) string {
 		return rawURL
 	}
 	return u.Host
+}
+
+// describeRedirect returns the label and kind shown for a redirect URI.
+// Custom schemes (cursor://host/..., com.example.app:/...) are labelled with
+// the scheme only: the browser hands them to whichever app registered the
+// scheme, so the "host" part is not a network destination.
+func describeRedirect(u *url.URL) (label, kind string) {
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return scheme + ":", "app"
+	}
+	if isLoopbackHost(u.Hostname()) {
+		return u.Host, "local"
+	}
+	return u.Host, "remote"
 }
 
 func isLoopbackHost(host string) bool {
