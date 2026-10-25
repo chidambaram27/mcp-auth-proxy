@@ -93,3 +93,4 @@ own PR and its own release, so the delta to upstream is visible in the
 | Release | Change |
 | ------- | ------ |
 | _unreleased_ | Fork CI/release plumbing (this section, image tags, `--version`) |
+| _unreleased_ | Consent page branding: `AUTHORIZE_SERVER_NAME`, `AUTHORIZE_LOGO`, `AUTHORIZE_BANNER`, `AUTHORIZE_FOOTER`; client name from DCR shown; strict CSP incl. redirect origin in `form-action` |
