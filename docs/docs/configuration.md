@@ -176,16 +176,19 @@ An unusable `--authorize-logo` (missing, oversized or unsupported file, or a non
 
 Lifetimes of the tokens issued by the built-in authorization server to MCP clients. Values are Go durations (`90s`, `15m`, `1h`, `720h`; no `d` unit) and must be positive (`MAX_SESSION_AGE` may be `0`).
 
-| Option                      | Environment Variable      | Default          | Description                                                |
-| --------------------------- | ------------------------- | ---------------- | ---------------------------------------------------------- |
-| `--access-token-lifespan`   | `ACCESS_TOKEN_LIFESPAN`   | `24h`            | Lifetime of access tokens (JWT `exp`, `expires_in`)        |
-| `--refresh-token-lifespan`  | `REFRESH_TOKEN_LIFESPAN`  | `720h` (30 days) | Lifetime of refresh tokens                                 |
-| `--authorize-code-lifespan` | `AUTHORIZE_CODE_LIFESPAN` | `15m`            | Lifetime of authorization codes (consent → token exchange) |
-| `--max-session-age`         | `MAX_SESSION_AGE`         | `0` (off)        | Maximum session length from the user's login, see below    |
+| Option                         | Environment Variable         | Default          | Description                                                |
+| ------------------------------ | ---------------------------- | ---------------- | ---------------------------------------------------------- |
+| `--access-token-lifespan`      | `ACCESS_TOKEN_LIFESPAN`      | `24h`            | Lifetime of access tokens (JWT `exp`, `expires_in`)        |
+| `--refresh-token-lifespan`     | `REFRESH_TOKEN_LIFESPAN`     | `720h` (30 days) | Lifetime of refresh tokens                                 |
+| `--authorize-code-lifespan`    | `AUTHORIZE_CODE_LIFESPAN`    | `15m`            | Lifetime of authorization codes (consent → token exchange) |
+| `--max-session-age`            | `MAX_SESSION_AGE`            | `0` (off)        | Maximum session length from the user's login, see below    |
+| `--refresh-token-grace-period` | `REFRESH_TOKEN_GRACE_PERIOD` | `0s`             | How long a used refresh token is still accepted, see below |
 
 Access tokens are self-contained JWTs and are accepted until they expire, so `ACCESS_TOKEN_LIFESPAN` bounds how long a user keeps access after being removed at the identity provider. Every refresh issues a new refresh token with a fresh `REFRESH_TOKEN_LIFESPAN`, so the refresh token lifespan limits idle time, not the total session length.
 
 `MAX_SESSION_AGE` adds an absolute cap: it is counted from the user's login at the identity provider (the `auth_time` claim) and does not move on refresh. Tokens issued near the end of the session expire when the session ends, and once it has ended the token endpoint answers `invalid_grant`, so the MCP client has to send the user through the login (and the identity provider's group/user checks) again. With the default `0` there is no cap.
+
+Refresh tokens are single use. Each refresh returns a new refresh token, and the old one stops working. If an already used refresh token is presented again (for example a leaked token replayed by someone else), the request fails with `invalid_grant` and **all refresh tokens of that authorization are revoked**, so the legitimate client has to sign in again too (OAuth 2.0 Security BCP, refresh token rotation). `REFRESH_TOKEN_GRACE_PERIOD` (e.g. `30s`) lets a client retry with the old token for a short time after it was first used, e.g. when the refresh response was lost on the network. It is counted from the first use and doesn't change the reuse handling after it. Access tokens that were already issued stay valid until they expire, because the proxy checks them without a database lookup.
 
 Access tokens carry `iat` / `nbf` = the time they were issued (also for refreshed tokens), `exp` = `iat` + `ACCESS_TOKEN_LIFESPAN`, and `auth_time` = the login time.
 

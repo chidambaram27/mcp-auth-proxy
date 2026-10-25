@@ -20,6 +20,9 @@ type TokenLifespans struct {
 	// MaxSessionAge caps the total session length counted from the user's
 	// login; 0 disables the cap.
 	MaxSessionAge time.Duration
+	// RefreshTokenGracePeriod is how long an already used refresh token is
+	// still accepted (0 = single use; reuse revokes the token family).
+	RefreshTokenGracePeriod time.Duration
 }
 
 // DefaultTokenLifespans returns the upstream lifespans (24h access token,
@@ -33,8 +36,8 @@ func DefaultTokenLifespans() TokenLifespans {
 }
 
 // ParseTokenLifespans parses Go duration strings (e.g. "1h", "720h", "90s").
-// Token lifespans must be positive; maxSessionAge may be 0 (disabled).
-func ParseTokenLifespans(accessToken, refreshToken, authorizeCode, maxSessionAge string) (TokenLifespans, error) {
+// Token lifespans must be positive; maxSessionAge and the grace period may be 0.
+func ParseTokenLifespans(accessToken, refreshToken, authorizeCode, maxSessionAge, refreshTokenGracePeriod string) (TokenLifespans, error) {
 	var l TokenLifespans
 	for _, f := range []struct {
 		name  string
@@ -45,6 +48,7 @@ func ParseTokenLifespans(accessToken, refreshToken, authorizeCode, maxSessionAge
 		{"refresh token lifespan", refreshToken, &l.RefreshToken},
 		{"authorize code lifespan", authorizeCode, &l.AuthorizeCode},
 		{"max session age", maxSessionAge, &l.MaxSessionAge},
+		{"refresh token grace period", refreshTokenGracePeriod, &l.RefreshTokenGracePeriod},
 	} {
 		d, err := time.ParseDuration(f.value)
 		if err != nil {
@@ -64,6 +68,9 @@ func (l TokenLifespans) Validate() error {
 	}
 	if l.AuthorizeCode <= 0 {
 		return fmt.Errorf("authorize code lifespan must be positive, got %s", l.AuthorizeCode)
+	}
+	if l.RefreshTokenGracePeriod < 0 {
+		return fmt.Errorf("refresh token grace period must not be negative, got %s", l.RefreshTokenGracePeriod)
 	}
 	if l.MaxSessionAge < 0 {
 		return fmt.Errorf("max session age must not be negative, got %s", l.MaxSessionAge)
