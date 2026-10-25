@@ -94,3 +94,4 @@ own PR and its own release, so the delta to upstream is visible in the
 | ------- | ------ |
 | [`v2.10.2-fork.1`](https://github.com/chidambaram27/mcp-auth-proxy/releases/tag/v2.10.2-fork.1) | Fork CI/release plumbing (this section, image tags, `--version`) (#3) |
 | [`v2.10.2-fork.1`](https://github.com/chidambaram27/mcp-auth-proxy/releases/tag/v2.10.2-fork.1) | Consent page branding (#4): `AUTHORIZE_SERVER_NAME`, `AUTHORIZE_LOGO`, `AUTHORIZE_BANNER`, `AUTHORIZE_FOOTER`; client name from DCR shown; strict CSP incl. redirect origin in `form-action` |
+| _unreleased_ | Consent page hardening: `cursor:`/`vscode:` redirects work (CSP scheme-source), custom schemes labelled "An installed app", bidi/control chars stripped from `client_name`, invalid `AUTHORIZE_LOGO` falls back to the default icon (no crash), branded Access Denied page with security headers, Deny button (`error=access_denied`), startup errors exit 1 without a panic |
