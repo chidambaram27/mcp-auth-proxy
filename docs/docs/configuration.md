@@ -176,12 +176,13 @@ An unusable `--authorize-logo` (missing, oversized or unsupported file, or a non
 
 Lifetimes of the tokens issued by the built-in authorization server to MCP clients. Values are Go durations (`90s`, `15m`, `1h`, `720h`; no `d` unit) and must be positive (`MAX_SESSION_AGE` may be `0`).
 
-| Option                      | Environment Variable      | Default          | Description                                                |
-| --------------------------- | ------------------------- | ---------------- | ---------------------------------------------------------- |
-| `--access-token-lifespan`   | `ACCESS_TOKEN_LIFESPAN`   | `24h`            | Lifetime of access tokens (JWT `exp`, `expires_in`)        |
-| `--refresh-token-lifespan`  | `REFRESH_TOKEN_LIFESPAN`  | `720h` (30 days) | Lifetime of refresh tokens                                 |
-| `--authorize-code-lifespan` | `AUTHORIZE_CODE_LIFESPAN` | `15m`            | Lifetime of authorization codes (consent → token exchange) |
-| `--max-session-age`         | `MAX_SESSION_AGE`         | `0` (off)        | Maximum session length from the user's login, see below    |
+| Option                         | Environment Variable         | Default          | Description                                                |
+| ------------------------------ | ---------------------------- | ---------------- | ---------------------------------------------------------- |
+| `--access-token-lifespan`      | `ACCESS_TOKEN_LIFESPAN`      | `24h`            | Lifetime of access tokens (JWT `exp`, `expires_in`)        |
+| `--refresh-token-lifespan`     | `REFRESH_TOKEN_LIFESPAN`     | `720h` (30 days) | Lifetime of refresh tokens                                 |
+| `--authorize-code-lifespan`    | `AUTHORIZE_CODE_LIFESPAN`    | `15m`            | Lifetime of authorization codes (consent → token exchange) |
+| `--max-session-age`            | `MAX_SESSION_AGE`            | `0` (off)        | Maximum session length from the user's login, see below    |
+| `--refresh-token-grace-period` | `REFRESH_TOKEN_GRACE_PERIOD` | `0s`             | How long a used refresh token is still accepted, see below |
 
 Access tokens are self-contained JWTs and are accepted until they expire, so `ACCESS_TOKEN_LIFESPAN` bounds how long a user keeps access after being removed at the identity provider. Every refresh issues a new refresh token with a fresh `REFRESH_TOKEN_LIFESPAN`, so the refresh token lifespan limits idle time, not the total session length.
 
@@ -192,6 +193,8 @@ Every token request (code exchange and refresh) re-checks the user against the c
 - Workspace (`hd`) and OIDC attribute values are recorded at login, so a change at the identity provider (for example a user removed from an OIDC group) is only noticed at the next login. Use `MAX_SESSION_AGE` to bound that, and to catch accounts that were suspended or deleted at the identity provider.
 - GitHub organization and team membership is not re-checked: while `GITHUB_ALLOWED_ORGS` is set, GitHub users stay allowed until their next login.
 - Sessions created before this check existed are re-checked against the stored userinfo, which only keeps the user ID field and the fields used in `HEADER_MAPPING`. Users allowed by a rule on another field (for example a Google workspace via `hd`, or an OIDC attribute) have their next refresh refused and sign in once more.
+
+Refresh tokens are single use. Each refresh returns a new refresh token, and the old one stops working. If an already used refresh token is presented again (for example a leaked token replayed by someone else), the request fails with `invalid_grant` and **all refresh tokens of that authorization are revoked**, so the legitimate client has to sign in again too (OAuth 2.0 Security BCP, refresh token rotation). `REFRESH_TOKEN_GRACE_PERIOD` (e.g. `30s`) lets a client retry with the old token for a short time after it was first used, e.g. when the refresh response was lost on the network. It is counted from the first use and doesn't change the reuse handling after it. Access tokens that were already issued stay valid until they expire, because the proxy checks them without a database lookup.
 
 Access tokens carry `iat` / `nbf` = the time they were issued (also for refreshed tokens), `exp` = `iat` + `ACCESS_TOKEN_LIFESPAN`, and `auth_time` = the login time.
 

@@ -30,6 +30,7 @@ type authorizeCodeSession struct {
 
 type accessTokenSession struct {
 	Signature string `gorm:"primaryKey;size:512"`
+	RequestID string `gorm:"index;size:512"`
 	Request   []byte `gorm:"not null"`
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -38,6 +39,8 @@ type accessTokenSession struct {
 type refreshTokenSession struct {
 	Signature       string `gorm:"primaryKey;size:512"`
 	AccessSignature string `gorm:"size:512"`
+	RequestID       string `gorm:"index;size:512"`
+	RotatedAt       *time.Time
 	Request         []byte `gorm:"not null"`
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
@@ -151,6 +154,7 @@ func (r *sqlRepository) CreateAccessTokenSession(ctx context.Context, signature 
 
 	session := accessTokenSession{
 		Signature: signature,
+		RequestID: fositeReq.GetID(),
 		Request:   data,
 	}
 
@@ -184,6 +188,7 @@ func (r *sqlRepository) CreateRefreshTokenSession(ctx context.Context, signature
 	session := refreshTokenSession{
 		Signature:       signature,
 		AccessSignature: accessSignature,
+		RequestID:       req.GetID(),
 		Request:         data,
 	}
 
@@ -201,14 +206,54 @@ func (r *sqlRepository) GetRefreshTokenSession(ctx context.Context, signature st
 		return nil, fmt.Errorf("failed to load refresh token session: %w", err)
 	}
 
-	return unmarshalRequest(session.Request, sess)
+	fositeReq, err := unmarshalRequest(session.Request, sess)
+	if err != nil {
+		return nil, err
+	}
+	rotatedAt, err := session.rotatedAt()
+	if err != nil {
+		return nil, err
+	}
+	if refreshTokenInactive(rotatedAt, time.Now()) {
+		return fositeReq, fosite.ErrInactiveToken
+	}
+	return fositeReq, nil
+}
+
+// rotatedAt returns the first rotation time. Rows written by older versions
+// only have it inside the stored request.
+func (s *refreshTokenSession) rotatedAt() (time.Time, error) {
+	var req models.Request
+	if err := json.Unmarshal(s.Request, &req); err != nil {
+		return time.Time{}, fmt.Errorf("failed to decode refresh token session: %w", err)
+	}
+	t := req.RotatedAt
+	if s.RotatedAt != nil && (t.IsZero() || s.RotatedAt.Before(t)) {
+		t = *s.RotatedAt
+	}
+	return t, nil
 }
 
 func (r *sqlRepository) DeleteRefreshTokenSession(ctx context.Context, signature string) error {
 	return r.db.WithContext(ctx).Delete(&refreshTokenSession{}, "signature = ?", signature).Error
 }
 
+// RotateRefreshToken marks the token as used with a conditional update, so
+// of two concurrent refreshes with the same token only one rotates it; the
+// other fails with fosite.ErrInactiveToken unless it is within the grace period.
 func (r *sqlRepository) RotateRefreshToken(ctx context.Context, requestID string, signature string) error {
+	now := time.Now().UTC()
+	res := r.db.WithContext(ctx).
+		Model(&refreshTokenSession{}).
+		Where("signature = ? AND rotated_at IS NULL", signature).
+		Update("rotated_at", now)
+	if res.Error != nil {
+		return fmt.Errorf("failed to rotate refresh token: %w", res.Error)
+	}
+	if res.RowsAffected == 1 {
+		return nil
+	}
+
 	var session refreshTokenSession
 	if err := r.db.WithContext(ctx).First(&session, "signature = ?", signature).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -216,30 +261,32 @@ func (r *sqlRepository) RotateRefreshToken(ctx context.Context, requestID string
 		}
 		return fmt.Errorf("failed to load refresh token session: %w", err)
 	}
-
-	var req models.Request
-	if err := json.Unmarshal(session.Request, &req); err != nil {
-		return fmt.Errorf("failed to decode refresh token session: %w", err)
-	}
-	req.RotatedAt = time.Now().UTC()
-
-	data, err := json.Marshal(req)
+	rotatedAt, err := session.rotatedAt()
 	if err != nil {
-		return fmt.Errorf("failed to encode refresh token session: %w", err)
+		return err
 	}
-
-	return r.db.WithContext(ctx).
-		Model(&refreshTokenSession{}).
-		Where("signature = ?", signature).
-		Update("request", data).Error
+	if refreshTokenInactive(rotatedAt, now) {
+		return fosite.ErrInactiveToken
+	}
+	return nil
 }
 
+// RevokeRefreshToken deletes all refresh tokens issued for the request ID
+// (the whole token family). Rows written before request_id was stored are
+// not matched.
 func (r *sqlRepository) RevokeRefreshToken(ctx context.Context, requestID string) error {
-	return r.db.WithContext(ctx).Delete(&refreshTokenSession{}, "signature = ?", requestID).Error
+	if requestID == "" {
+		return nil
+	}
+	return r.db.WithContext(ctx).Delete(&refreshTokenSession{}, "request_id = ?", requestID).Error
 }
 
+// RevokeAccessToken deletes all access token records issued for the request ID.
 func (r *sqlRepository) RevokeAccessToken(ctx context.Context, requestID string) error {
-	return r.db.WithContext(ctx).Delete(&accessTokenSession{}, "signature = ?", requestID).Error
+	if requestID == "" {
+		return nil
+	}
+	return r.db.WithContext(ctx).Delete(&accessTokenSession{}, "request_id = ?", requestID).Error
 }
 
 func (r *sqlRepository) RegisterClient(ctx context.Context, fositeClient fosite.Client) error {
