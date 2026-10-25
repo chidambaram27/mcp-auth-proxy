@@ -16,6 +16,7 @@ concurrency:
 
 jobs:
   deploy:
+    if: github.repository == 'sigbit/mcp-auth-proxy'
     runs-on: ubuntu-latest
     defaults:
       run:

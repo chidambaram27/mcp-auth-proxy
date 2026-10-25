@@ -170,7 +170,9 @@ type proxyRunnerFunc func(
 ) error
 
 func main() {
-	if err := newRootCommand(mcpproxy.Run).Execute(); err != nil {
+	rootCmd := newRootCommand(mcpproxy.Run)
+	rootCmd.Version = version
+	if err := rootCmd.Execute(); err != nil {
 		panic(err)
 	}
 }

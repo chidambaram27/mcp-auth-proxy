@@ -9,8 +9,9 @@ COPY ./ /app
 
 ARG TARGETARCH
 ARG TARGETOS
+ARG VERSION=dev
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -trimpath -ldflags "-w -s" -o /app/bin/main .
+    go build -trimpath -ldflags "-w -s -X main.version=${VERSION}" -o /app/bin/main .
 
 FROM debian:bookworm-slim
 
