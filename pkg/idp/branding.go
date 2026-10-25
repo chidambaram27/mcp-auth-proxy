@@ -50,6 +50,11 @@ const (
 // file path or a URL, like oauth2-proxy's --custom-sign-in-logo: a path is
 // read and inlined as a data URI (so it survives a read-only filesystem and
 // needs no request-time file access), a URL is passed through to <img src>.
+//
+// An unusable logo (missing/oversized/unsupported file, non-http(s) URL) is
+// reported as an error, but the returned Branding is still valid: it keeps the
+// other options and falls back to the built-in icon, so callers can log the
+// error and keep serving instead of failing startup over a cosmetic setting.
 func LoadBranding(serverName, logo, banner, footer string) (Branding, error) {
 	b := Branding{
 		ServerName: strings.TrimSpace(serverName),
@@ -66,16 +71,32 @@ func LoadBranding(serverName, logo, banner, footer string) (Branding, error) {
 	case isHTTPURL(logo):
 		b.logoSrc = logo
 		b.logoCSPSource = cspSourceForURL(logo)
+	case hasURLScheme(logo):
+		return b, fmt.Errorf("unsupported logo URL %q (want an http(s) URL or a file path); using the default icon", logo)
 	default:
 		src, err := inlineLogoFile(logo)
 		if err != nil {
-			return Branding{}, err
+			return b, fmt.Errorf("%w; using the default icon", err)
 		}
 		b.logoSrc = src
 		b.logoCSPSource = "data:"
 	}
 
 	return b, nil
+}
+
+// InsecureLogoURL reports whether the logo is loaded over plain http, which
+// browsers block or upgrade as mixed content on an https consent page.
+func (b Branding) InsecureLogoURL() bool {
+	return strings.HasPrefix(strings.ToLower(b.logoSrc), "http://")
+}
+
+// hasURLScheme reports whether s looks like "scheme:..." rather than a file
+// path (e.g. "javascript:alert(1)", "data:...", "ftp://host/logo.png").
+// Windows drive letters ("C:\\logo.png") are treated as paths.
+func hasURLScheme(s string) bool {
+	u, err := url.Parse(s)
+	return err == nil && len(u.Scheme) > 1
 }
 
 func isHTTPURL(s string) bool {
