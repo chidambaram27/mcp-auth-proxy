@@ -92,5 +92,5 @@ own PR and its own release, so the delta to upstream is visible in the
 
 | Release | Change |
 | ------- | ------ |
-| _unreleased_ | Fork CI/release plumbing (this section, image tags, `--version`) |
-| _unreleased_ | Consent page branding: `AUTHORIZE_SERVER_NAME`, `AUTHORIZE_LOGO`, `AUTHORIZE_BANNER`, `AUTHORIZE_FOOTER`; client name from DCR shown; strict CSP incl. redirect origin in `form-action` |
+| [`v2.10.2-fork.1`](https://github.com/chidambaram27/mcp-auth-proxy/releases/tag/v2.10.2-fork.1) | Fork CI/release plumbing (this section, image tags, `--version`) (#3) |
+| [`v2.10.2-fork.1`](https://github.com/chidambaram27/mcp-auth-proxy/releases/tag/v2.10.2-fork.1) | Consent page branding (#4): `AUTHORIZE_SERVER_NAME`, `AUTHORIZE_LOGO`, `AUTHORIZE_BANNER`, `AUTHORIZE_FOOTER`; client name from DCR shown; strict CSP incl. redirect origin in `form-action` |
