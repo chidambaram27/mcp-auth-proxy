@@ -6,6 +6,7 @@ import (
 	"errors"
 	"html/template"
 	"net/http"
+	"time"
 
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
@@ -78,6 +79,8 @@ const (
 	SessionKeyOAuthState  = "oauth_state"
 	SessionKeyUserID      = "user_id"
 	SessionKeyUserInfo    = "user_info"
+	// SessionKeyAuthTime holds the Unix time of the last successful login.
+	SessionKeyAuthTime = "auth_time"
 )
 
 func (a *AuthRouter) SetupRoutes(router gin.IRouter) {
@@ -108,6 +111,7 @@ func (a *AuthRouter) SetupRoutes(router gin.IRouter) {
 			}
 			session.Set(SessionKeyAuthorized, true)
 			session.Set(SessionKeyUserID, user)
+			session.Set(SessionKeyAuthTime, time.Now().Unix())
 			if userInfo != nil {
 				if len(a.userInfoFields) > 0 {
 					userInfo = filterUserInfo(userInfo, a.userInfoFields)
@@ -197,6 +201,7 @@ func (a *AuthRouter) handleLoginPost(c *gin.Context) {
 	session := sessions.Default(c)
 	session.Set(SessionKeyAuthorized, true)
 	session.Set(SessionKeyUserID, PasswordUserID)
+	session.Set(SessionKeyAuthTime, time.Now().Unix())
 	redirectURL := session.Get(SessionKeyRedirectURL)
 	if redirectURL != nil {
 		session.Delete(SessionKeyRedirectURL)
