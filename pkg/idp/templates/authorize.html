@@ -119,8 +119,26 @@
         line-height: 1.45;
         margin: 0 0 1.5rem;
       }
+      .actions {
+        display: flex;
+        gap: 0.75rem;
+      }
+      .deny-button {
+        flex: 1;
+        padding: 12px 20px;
+        background: white;
+        color: #444;
+        border: 1px solid #ccd2d8;
+        border-radius: 8px;
+        font-size: 16px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      .deny-button:hover {
+        background: #f3f5f7;
+      }
       .authorize-button {
-        width: 100%;
+        flex: 2;
         padding: 12px 20px;
         background: linear-gradient(45deg, #667eea, #764ba2);
         color: white;
@@ -201,17 +219,27 @@
 
       <div class="warning" role="note">
         Only continue if you started this sign-in yourself, from your own MCP
-        client, and you recognise the redirect above. Otherwise close this tab.
+        client, and you recognise the redirect above. Otherwise choose Deny.
       </div>
 
-      <form method="post">
-        <button class="authorize-button" type="submit">Authorize</button>
+      <form method="post" class="actions">
+        <button class="deny-button" type="submit" name="action" value="deny">
+          Deny
+        </button>
+        <button
+          class="authorize-button"
+          type="submit"
+          name="action"
+          value="approve"
+        >
+          Authorize
+        </button>
       </form>
 
       {{if .Footer}}
       <div class="footer">{{.Footer}}</div>
       {{else if not .FooterDisabled}}
-      <p class="footer">Close this tab to cancel.</p>
+      <p class="footer">Not you, or didn’t start this? Choose Deny.</p>
       {{end}}
     </main>
   </body>

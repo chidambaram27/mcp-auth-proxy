@@ -344,6 +344,17 @@ func (a *IDPRouter) handleAuthorizationReturn(c *gin.Context) {
 		}
 	}()
 
+	if c.PostForm("action") == "deny" {
+		removeAuthorizeRequestID(session, arID)
+		if err := session.Save(); err != nil {
+			a.logger.Error("Failed to remove authorize request from session", zap.Error(err))
+		}
+		// RFC 6749 4.1.2.1: tell the client the user declined, so it can stop
+		// waiting instead of hanging until the user closes the tab.
+		a.provider.WriteAuthorizeError(ctx, c.Writer, ar, fosite.ErrAccessDenied.WithDescription("The user denied the request."))
+		return
+	}
+
 	for _, scope := range ar.GetRequestedScopes() {
 		ar.GrantScope(scope)
 	}
