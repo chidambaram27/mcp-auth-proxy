@@ -333,6 +333,10 @@ func TestAuthenticationFlow(t *testing.T) {
 		resp.Body.Close()
 
 		require.Equal(t, http.StatusForbidden, resp.StatusCode)
+		require.Equal(t, "no-store", resp.Header.Get("Cache-Control"))
+		require.Equal(t, "DENY", resp.Header.Get("X-Frame-Options"))
+		require.Equal(t, "default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; form-action 'self'; frame-ancestors 'none'",
+			resp.Header.Get("Content-Security-Policy"))
 
 		// Step 4: Test access when authorization fails
 		resp, err = client.Get(server.URL + "/")
@@ -436,5 +440,54 @@ func TestLoginAutoRedirect(t *testing.T) {
 		defer resp.Body.Close()
 
 		require.Equal(t, http.StatusOK, resp.StatusCode)
+	})
+}
+
+func TestRenderUnauthorizedBranding(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	render := func(b *PageBranding) (*httptest.ResponseRecorder, string) {
+		authRouter, err := NewAuthRouter(nil, false, nil)
+		require.NoError(t, err)
+		if b != nil {
+			authRouter.SetPageBranding(*b)
+		}
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		authRouter.renderUnauthorized(c, "carol@example.com", "Keycloak")
+		return w, w.Body.String()
+	}
+
+	t.Run("default", func(t *testing.T) {
+		w, body := render(nil)
+		require.Equal(t, http.StatusForbidden, w.Code)
+		require.Contains(t, body, `<html lang="en">`)
+		require.Contains(t, body, "<title>Access Denied - MCP Auth Proxy</title>")
+		require.Contains(t, body, "🚫")
+		require.Contains(t, body, "carol@example.com")
+		require.NotContains(t, body, "min-width", "card must shrink on narrow screens")
+		require.Contains(t, w.Header().Get("Content-Security-Policy"), "img-src 'none'")
+	})
+
+	t.Run("branded", func(t *testing.T) {
+		w, body := render(&PageBranding{
+			ServerName: "Trino (staging)",
+			LogoSrc:    "https://cdn.example.com/logo.png",
+			Footer:     "Ask in <strong>#infra-support</strong>",
+			ImgSrc:     "https://cdn.example.com",
+		})
+		require.Contains(t, body, "<title>Access Denied - Trino (staging)</title>")
+		require.Contains(t, body, `<img src="https://cdn.example.com/logo.png"`)
+		require.NotContains(t, body, "🚫")
+		require.Contains(t, body, "Ask in <strong>#infra-support</strong>")
+		require.Contains(t, w.Header().Get("Content-Security-Policy"), "img-src https://cdn.example.com;")
+	})
+
+	t.Run("escapes user", func(t *testing.T) {
+		authRouter, err := NewAuthRouter(nil, false, nil)
+		require.NoError(t, err)
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		authRouter.renderUnauthorized(c, "<script>x</script>", "Keycloak")
+		require.NotContains(t, w.Body.String(), "<script>x</script>")
 	})
 }

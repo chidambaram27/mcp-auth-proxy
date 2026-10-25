@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/sigbit/mcp-auth-proxy/v2/pkg/auth"
 )
 
 // Branding holds the optional customisation of the consent (authorize) page.
@@ -158,10 +160,7 @@ func logoMediaType(path string) (string, error) {
 // source for that redirect URI (see redirectCSPSource); empty allows 'self'
 // only.
 func (b Branding) contentSecurityPolicy(formActionSource string) string {
-	imgSrc := "'none'"
-	if !b.logoDisabled && b.logoSrc != "" && b.logoCSPSource != "" {
-		imgSrc = b.logoCSPSource
-	}
+	imgSrc := b.imgSrc()
 	formAction := "'self'"
 	if formActionSource != "" {
 		formAction += " " + formActionSource
@@ -239,4 +238,26 @@ func (b Branding) effectiveFooter() template.HTML {
 // footerDisabled reports whether the operator passed "-" to hide the footer.
 func (b Branding) footerDisabled() bool {
 	return strings.TrimSpace(b.Footer) == brandingDisable
+}
+
+// PageBranding returns the branding subset reused by the auth pages (e.g.
+// the Access Denied page).
+func (b Branding) PageBranding() auth.PageBranding {
+	return auth.PageBranding{
+		ServerName:     b.ServerName,
+		LogoSrc:        b.logoURL(),
+		HideIcon:       b.logoDisabled,
+		Footer:         b.effectiveFooter(),
+		FooterDisabled: b.footerDisabled(),
+		ImgSrc:         b.imgSrc(),
+	}
+}
+
+// imgSrc is the CSP img-src value: only the configured logo source, else
+// 'none'.
+func (b Branding) imgSrc() string {
+	if !b.logoDisabled && b.logoSrc != "" && b.logoCSPSource != "" {
+		return b.logoCSPSource
+	}
+	return "'none'"
 }

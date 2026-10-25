@@ -1,53 +1,69 @@
 <!DOCTYPE html>
-<html lang="ja">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Access Denied - MCP Auth Proxy</title>
+    <meta name="referrer" content="no-referrer" />
+    <title>Access Denied - {{.ServerLabel}}</title>
     <style>
       body {
         font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
         background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
         margin: 0;
-        padding: 0;
+        padding: 1rem;
         min-height: 100vh;
         display: flex;
         align-items: center;
         justify-content: center;
+        box-sizing: border-box;
+        color: #333;
       }
       .error-container {
         background: white;
-        padding: 2rem;
-        border-radius: 10px;
-        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+        padding: 2.5rem;
+        border-radius: 12px;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
         text-align: center;
-        min-width: 400px;
-        max-width: 500px;
+        max-width: 440px;
+        width: 100%;
+        box-sizing: border-box;
+      }
+      .logo {
+        margin-bottom: 0.5rem;
+      }
+      .logo img {
+        max-height: 56px;
+        max-width: 100%;
+      }
+      .icon {
+        font-size: 2.5rem;
       }
       h1 {
-        color: #e74c3c;
-        margin-bottom: 1rem;
-        font-size: 2rem;
+        color: #c0392b;
+        font-size: 1.5rem;
+        font-weight: 600;
+        margin: 0.5rem 0 1rem;
+      }
+      .description {
+        color: #555;
+        line-height: 1.5;
+        margin: 0 0 1.5rem;
       }
       .user-info {
         background: #f8f9fa;
-        padding: 1rem;
-        border-radius: 6px;
-        margin: 1.5rem 0;
+        padding: 0.75rem 1rem;
+        border-radius: 8px;
+        margin: 0 0 1.5rem;
         border-left: 4px solid #e74c3c;
+        text-align: left;
       }
       .user-info p {
-        margin: 0.5rem 0;
-        color: #333;
+        margin: 0.4rem 0;
+        word-break: break-word;
       }
       .user-info strong {
-        color: #e74c3c;
-      }
-      .description {
-        color: #666;
-        margin-bottom: 2rem;
-        line-height: 1.5;
-        font-size: 1.1rem;
+        color: #777;
+        font-weight: 500;
       }
       .logout-button {
         display: inline-block;
@@ -55,42 +71,47 @@
         background-color: #e74c3c;
         color: white;
         text-decoration: none;
-        border-radius: 6px;
+        border-radius: 8px;
         font-size: 16px;
-        font-weight: 500;
-        transition: transform 0.2s, box-shadow 0.2s;
-        cursor: pointer;
+        font-weight: 600;
       }
       .logout-button:hover {
         background-color: #c0392b;
-        transform: translateY(-2px);
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
       }
-      .icon {
-        font-size: 4rem;
-        margin-bottom: 1rem;
+      .footer {
+        color: #999;
+        font-size: 0.8rem;
+        margin-top: 1.5rem;
       }
     </style>
   </head>
   <body>
-    <div class="error-container">
-      <div class="icon">🚫</div>
-      <h1>Access Denied</h1>
+    <main class="error-container">
+      {{if .Branding.LogoSrc}}
+      <div class="logo"><img src="{{.Branding.LogoSrc}}" alt="" /></div>
+      {{else if not .Branding.HideIcon}}
+      <div class="icon" aria-hidden="true">🚫</div>
+      {{end}}
+      <h1>Access denied</h1>
       <p class="description">
-        Sorry, you don't have permission to access this resource.
+        You are signed in, but your account is not allowed to access
+        <strong>{{.ServerLabel}}</strong>.
       </p>
 
       <div class="user-info">
         <p><strong>Provider:</strong> {{.Provider}}</p>
-        <p><strong>Current User:</strong> {{.UserID}}</p>
-        <p><strong>Status:</strong> Authenticated but not authorized</p>
+        <p><strong>Signed in as:</strong> {{.UserID}}</p>
       </div>
 
       <p class="description">
         If you need access, please contact your administrator.
       </p>
 
-      <a href="/.auth/logout" class="logout-button">Logout</a>
-    </div>
+      <a href="/.auth/logout" class="logout-button">Sign out</a>
+
+      {{if .Branding.Footer}}
+      <div class="footer">{{.Branding.Footer}}</div>
+      {{end}}
+    </main>
   </body>
 </html>

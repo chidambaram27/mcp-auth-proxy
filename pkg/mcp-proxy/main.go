@@ -309,6 +309,7 @@ func Run(
 	} else if branding.InsecureLogoURL() {
 		logger.Warn("Consent page logo (AUTHORIZE_LOGO) uses http://; browsers block it on an https consent page")
 	}
+	authRouter.SetPageBranding(branding.PageBranding())
 	idpRouter, err := idp.NewIDPRouter(repo, privKey, logger, externalURL, secret, authRouter, branding)
 	if err != nil {
 		return fmt.Errorf("failed to create IDP router: %w", err)
