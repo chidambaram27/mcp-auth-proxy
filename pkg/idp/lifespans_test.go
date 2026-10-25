@@ -14,17 +14,23 @@ import (
 )
 
 func TestParseTokenLifespans(t *testing.T) {
-	l, err := ParseTokenLifespans("2m", "5m", "30s")
+	l, err := ParseTokenLifespans("2m", "5m", "30s", "0")
 	require.NoError(t, err)
 	require.Equal(t, TokenLifespans{AccessToken: 2 * time.Minute, RefreshToken: 5 * time.Minute, AuthorizeCode: 30 * time.Second}, l)
 
-	for _, tc := range [][3]string{
-		{"", "5m", "30s"},
-		{"2m", "abc", "30s"},
-		{"2m", "5m", "0"},
-		{"-1h", "5m", "30s"},
+	l, err = ParseTokenLifespans("2m", "5m", "30s", "168h")
+	require.NoError(t, err)
+	require.Equal(t, 168*time.Hour, l.MaxSessionAge)
+
+	for _, tc := range [][4]string{
+		{"", "5m", "30s", "0"},
+		{"2m", "abc", "30s", "0"},
+		{"2m", "5m", "0", "0"},
+		{"-1h", "5m", "30s", "0"},
+		{"2m", "5m", "30s", ""},
+		{"2m", "5m", "30s", "-1h"},
 	} {
-		_, err := ParseTokenLifespans(tc[0], tc[1], tc[2])
+		_, err := ParseTokenLifespans(tc[0], tc[1], tc[2], tc[3])
 		require.Error(t, err, "%v", tc)
 	}
 }

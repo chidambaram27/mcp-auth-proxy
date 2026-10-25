@@ -233,6 +233,7 @@ func newRootCommand(run proxyRunnerFunc) *cobra.Command {
 	var accessTokenLifespan string
 	var refreshTokenLifespan string
 	var authorizeCodeLifespan string
+	var maxSessionAge string
 
 	rootCmd := &cobra.Command{
 		Use: "mcp-warp",
@@ -264,7 +265,7 @@ func newRootCommand(run proxyRunnerFunc) *cobra.Command {
 
 			headerMappingMap := parseHeaderMapping(headerMapping)
 
-			tokenLifespans, err := idp.ParseTokenLifespans(accessTokenLifespan, refreshTokenLifespan, authorizeCodeLifespan)
+			tokenLifespans, err := idp.ParseTokenLifespans(accessTokenLifespan, refreshTokenLifespan, authorizeCodeLifespan, maxSessionAge)
 			if err != nil {
 				return err
 			}
@@ -388,6 +389,7 @@ func newRootCommand(run proxyRunnerFunc) *cobra.Command {
 	rootCmd.Flags().StringVar(&accessTokenLifespan, "access-token-lifespan", getEnvWithDefault("ACCESS_TOKEN_LIFESPAN", idp.DefaultAccessTokenLifespan.String()), "Lifetime of issued access tokens (Go duration, e.g. 1h, 30m)")
 	rootCmd.Flags().StringVar(&refreshTokenLifespan, "refresh-token-lifespan", getEnvWithDefault("REFRESH_TOKEN_LIFESPAN", idp.DefaultRefreshTokenLifespan.String()), "Lifetime of issued refresh tokens (Go duration, e.g. 168h). Each refresh issues a new refresh token with a fresh lifetime")
 	rootCmd.Flags().StringVar(&authorizeCodeLifespan, "authorize-code-lifespan", getEnvWithDefault("AUTHORIZE_CODE_LIFESPAN", idp.DefaultAuthorizeCodeLifespan.String()), "Lifetime of authorization codes (Go duration, e.g. 5m)")
+	rootCmd.Flags().StringVar(&maxSessionAge, "max-session-age", getEnvWithDefault("MAX_SESSION_AGE", "0"), "Maximum session length from the user's login (Go duration, e.g. 168h). After it, token refresh fails and the user must sign in again. 0 disables the cap")
 
 	return rootCmd
 }

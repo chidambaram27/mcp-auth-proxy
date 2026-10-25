@@ -17,6 +17,9 @@ type TokenLifespans struct {
 	AccessToken   time.Duration
 	RefreshToken  time.Duration
 	AuthorizeCode time.Duration
+	// MaxSessionAge caps the total session length counted from the user's
+	// login; 0 disables the cap.
+	MaxSessionAge time.Duration
 }
 
 // DefaultTokenLifespans returns the upstream lifespans (24h access token,
@@ -30,8 +33,8 @@ func DefaultTokenLifespans() TokenLifespans {
 }
 
 // ParseTokenLifespans parses Go duration strings (e.g. "1h", "720h", "90s").
-// Every value must be positive.
-func ParseTokenLifespans(accessToken, refreshToken, authorizeCode string) (TokenLifespans, error) {
+// Token lifespans must be positive; maxSessionAge may be 0 (disabled).
+func ParseTokenLifespans(accessToken, refreshToken, authorizeCode, maxSessionAge string) (TokenLifespans, error) {
 	var l TokenLifespans
 	for _, f := range []struct {
 		name  string
@@ -41,6 +44,7 @@ func ParseTokenLifespans(accessToken, refreshToken, authorizeCode string) (Token
 		{"access token lifespan", accessToken, &l.AccessToken},
 		{"refresh token lifespan", refreshToken, &l.RefreshToken},
 		{"authorize code lifespan", authorizeCode, &l.AuthorizeCode},
+		{"max session age", maxSessionAge, &l.MaxSessionAge},
 	} {
 		d, err := time.ParseDuration(f.value)
 		if err != nil {
@@ -60,6 +64,9 @@ func (l TokenLifespans) Validate() error {
 	}
 	if l.AuthorizeCode <= 0 {
 		return fmt.Errorf("authorize code lifespan must be positive, got %s", l.AuthorizeCode)
+	}
+	if l.MaxSessionAge < 0 {
+		return fmt.Errorf("max session age must not be negative, got %s", l.MaxSessionAge)
 	}
 	return nil
 }

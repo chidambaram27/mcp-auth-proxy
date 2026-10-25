@@ -704,6 +704,7 @@ func TestNewRootCommand_TokenLifespans(t *testing.T) {
 		t.Setenv("ACCESS_TOKEN_LIFESPAN", "")
 		t.Setenv("REFRESH_TOKEN_LIFESPAN", "")
 		t.Setenv("AUTHORIZE_CODE_LIFESPAN", "")
+		t.Setenv("MAX_SESSION_AGE", "")
 		got, err := runWithLifespans(t, []string{"http://backend"})
 		if err != nil {
 			t.Fatal(err)
@@ -718,11 +719,12 @@ func TestNewRootCommand_TokenLifespans(t *testing.T) {
 		t.Setenv("ACCESS_TOKEN_LIFESPAN", "2m")
 		t.Setenv("REFRESH_TOKEN_LIFESPAN", "5m")
 		t.Setenv("AUTHORIZE_CODE_LIFESPAN", "30s")
+		t.Setenv("MAX_SESSION_AGE", "10m")
 		got, err := runWithLifespans(t, []string{"http://backend"})
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := idp.TokenLifespans{AccessToken: 2 * time.Minute, RefreshToken: 5 * time.Minute, AuthorizeCode: 30 * time.Second}
+		want := idp.TokenLifespans{AccessToken: 2 * time.Minute, RefreshToken: 5 * time.Minute, AuthorizeCode: 30 * time.Second, MaxSessionAge: 10 * time.Minute}
 		if got != want {
 			t.Fatalf("got %+v, want %+v", got, want)
 		}
@@ -743,6 +745,8 @@ func TestNewRootCommand_TokenLifespans(t *testing.T) {
 		{"--access-token-lifespan", "1d"},
 		{"--refresh-token-lifespan", "0s"},
 		{"--authorize-code-lifespan", "-1m"},
+		{"--max-session-age", "-1h"},
+		{"--max-session-age", "7d"},
 	} {
 		t.Run("rejects "+bad[0]+"="+bad[1], func(t *testing.T) {
 			if _, err := runWithLifespans(t, append(bad, "http://backend")); err == nil {
