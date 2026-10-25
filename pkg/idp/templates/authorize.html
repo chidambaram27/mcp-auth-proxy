@@ -102,6 +102,10 @@
         background: #e8f5e9;
         color: #2e7d32;
       }
+      .badge.app {
+        background: #eef1f5;
+        color: #44515f;
+      }
       .badge.remote {
         background: #fff4e5;
         color: #a35a00;
@@ -177,8 +181,10 @@
           <dt>Redirects to</dt>
           <dd>
             <span class="mono">{{.RedirectHost}}</span>
-            {{if .RedirectIsLocal}}
+            {{if eq .RedirectKind "local"}}
             <span class="badge local">An app on this computer</span>
+            {{else if eq .RedirectKind "app"}}
+            <span class="badge app">An installed app</span>
             {{else}}
             <span class="badge remote">A website</span>
             {{end}}

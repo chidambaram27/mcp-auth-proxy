@@ -92,6 +92,35 @@ func TestAuthorizePageMarksRemoteRedirect(t *testing.T) {
 	require.NotContains(t, body, "An app on this computer")
 }
 
+func TestAuthorizePageMarksCustomSchemeRedirect(t *testing.T) {
+	server, _, _ := setupTestServer(t)
+
+	body := renderAuthorizePage(t, server.URL, "Cursor", "cursor://anysphere.cursor-retrieval/oauth/callback")
+
+	require.Contains(t, body, `<span class="mono">cursor:</span>`)
+	require.NotContains(t, body, "anysphere.cursor-retrieval", "custom-scheme authority is not a network host")
+	require.Contains(t, body, "An installed app")
+	require.NotContains(t, body, "A website")
+}
+
+func TestDescribeRedirect(t *testing.T) {
+	for raw, want := range map[string][2]string{
+		"http://127.0.0.1:19876/cb":              {"127.0.0.1:19876", "local"},
+		"http://localhost:3000/cb":               {"localhost:3000", "local"},
+		"http://[::1]:3000/cb":                   {"[::1]:3000", "local"},
+		"https://chat.example.com/cb":            {"chat.example.com", "remote"},
+		"https://localhost.attacker.example/cb":  {"localhost.attacker.example", "remote"},
+		"cursor://anysphere.cursor-retrieval/cb": {"cursor:", "app"},
+		"VSCode://vscode.github-authentication/": {"vscode:", "app"},
+		"com.example.app:/oauth/callback":        {"com.example.app:", "app"},
+	} {
+		u, err := url.Parse(raw)
+		require.NoError(t, err)
+		label, kind := describeRedirect(u)
+		require.Equal(t, want, [2]string{label, kind}, raw)
+	}
+}
+
 func TestAuthorizePageWithoutClientName(t *testing.T) {
 	server, _, _ := setupTestServer(t)
 
