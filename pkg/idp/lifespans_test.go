@@ -14,23 +14,26 @@ import (
 )
 
 func TestParseTokenLifespans(t *testing.T) {
-	l, err := ParseTokenLifespans("2m", "5m", "30s", "0")
+	l, err := ParseTokenLifespans("2m", "5m", "30s", "0", "0s")
 	require.NoError(t, err)
 	require.Equal(t, TokenLifespans{AccessToken: 2 * time.Minute, RefreshToken: 5 * time.Minute, AuthorizeCode: 30 * time.Second}, l)
 
-	l, err = ParseTokenLifespans("2m", "5m", "30s", "168h")
+	l, err = ParseTokenLifespans("2m", "5m", "30s", "168h", "10s")
 	require.NoError(t, err)
 	require.Equal(t, 168*time.Hour, l.MaxSessionAge)
+	require.Equal(t, 10*time.Second, l.RefreshTokenGracePeriod)
 
-	for _, tc := range [][4]string{
-		{"", "5m", "30s", "0"},
-		{"2m", "abc", "30s", "0"},
-		{"2m", "5m", "0", "0"},
-		{"-1h", "5m", "30s", "0"},
-		{"2m", "5m", "30s", ""},
-		{"2m", "5m", "30s", "-1h"},
+	for _, tc := range [][5]string{
+		{"", "5m", "30s", "0", "0s"},
+		{"2m", "abc", "30s", "0", "0s"},
+		{"2m", "5m", "0", "0", "0s"},
+		{"-1h", "5m", "30s", "0", "0s"},
+		{"2m", "5m", "30s", "", "0s"},
+		{"2m", "5m", "30s", "-1h", "0s"},
+		{"2m", "5m", "30s", "0", "-1s"},
+		{"2m", "5m", "30s", "0", "x"},
 	} {
-		_, err := ParseTokenLifespans(tc[0], tc[1], tc[2], tc[3])
+		_, err := ParseTokenLifespans(tc[0], tc[1], tc[2], tc[3], tc[4])
 		require.Error(t, err, "%v", tc)
 	}
 }

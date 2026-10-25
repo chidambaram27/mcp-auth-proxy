@@ -17,7 +17,35 @@ type kvsRepository struct {
 	bucketName string
 }
 
-var RefreshTokenGracePeriod = 1 * time.Hour
+// RefreshTokenGracePeriod is how long a rotated (already used) refresh token
+// is still accepted, e.g. for a client retrying a refresh whose response it
+// lost. After it, using the token again counts as reuse: fosite rejects it and
+// revokes the whole token family. 0 means a refresh token works exactly once.
+var RefreshTokenGracePeriod time.Duration
+
+// refreshTokenInactive reports whether a refresh token rotated at rotatedAt
+// must be treated as reused.
+func refreshTokenInactive(rotatedAt time.Time, now time.Time) bool {
+	if rotatedAt.IsZero() {
+		return false
+	}
+	// A concurrent request may have rotated the token after now was taken.
+	return max(now.Sub(rotatedAt), 0) >= RefreshTokenGracePeriod
+}
+
+// requestTokens indexes the token signatures issued for one request ID (one
+// authorization grant and all its refreshes), so the whole family can be
+// revoked by request ID.
+type requestTokens struct {
+	Access  []string `json:"access,omitempty"`
+	Refresh []string `json:"refresh,omitempty"`
+}
+
+const (
+	accessTokenPrefix   = "access_token-"
+	refreshTokenPrefix  = "refresh_token-"
+	requestTokensPrefix = "request_tokens-"
+)
 
 func NewKVSRepository(path string, bucketName string) (Repository, error) {
 	db, err := bbolt.Open(path, 0600, nil)
@@ -99,8 +127,81 @@ func (r *kvsRepository) InvalidateAuthorizeCodeSession(ctx context.Context, code
 	return r.delete(ctx, "authorize_code-"+code)
 }
 
+// createIndexed stores a token record and adds its signature to the request's
+// token index in the same transaction.
+func (r *kvsRepository) createIndexed(prefix, signature string, fositeReq fosite.Requester) error {
+	return r.db.Update(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(r.bucketName))
+		data, err := json.Marshal(models.FromFositeReq(fositeReq))
+		if err != nil {
+			return fmt.Errorf("failed to marshal value: %w", err)
+		}
+		if err := bucket.Put([]byte(prefix+signature), data); err != nil {
+			return err
+		}
+		requestID := fositeReq.GetID()
+		if requestID == "" {
+			return nil
+		}
+		var idx requestTokens
+		if raw := bucket.Get([]byte(requestTokensPrefix + requestID)); raw != nil {
+			if err := json.Unmarshal(raw, &idx); err != nil {
+				return fmt.Errorf("failed to unmarshal token index: %w", err)
+			}
+		}
+		if prefix == accessTokenPrefix {
+			idx.Access = append(idx.Access, signature)
+		} else {
+			idx.Refresh = append(idx.Refresh, signature)
+		}
+		raw, err := json.Marshal(idx)
+		if err != nil {
+			return fmt.Errorf("failed to marshal token index: %w", err)
+		}
+		return bucket.Put([]byte(requestTokensPrefix+requestID), raw)
+	})
+}
+
+// revokeFamily deletes all tokens of the given kind issued for requestID.
+// Tokens stored before the index existed are not found.
+func (r *kvsRepository) revokeFamily(prefix, requestID string) error {
+	if requestID == "" {
+		return nil
+	}
+	return r.db.Update(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(r.bucketName))
+		key := []byte(requestTokensPrefix + requestID)
+		raw := bucket.Get(key)
+		if raw == nil {
+			return nil
+		}
+		var idx requestTokens
+		if err := json.Unmarshal(raw, &idx); err != nil {
+			return fmt.Errorf("failed to unmarshal token index: %w", err)
+		}
+		sigs := &idx.Refresh
+		if prefix == accessTokenPrefix {
+			sigs = &idx.Access
+		}
+		for _, sig := range *sigs {
+			if err := bucket.Delete([]byte(prefix + sig)); err != nil {
+				return err
+			}
+		}
+		*sigs = nil
+		if len(idx.Access) == 0 && len(idx.Refresh) == 0 {
+			return bucket.Delete(key)
+		}
+		raw, err := json.Marshal(idx)
+		if err != nil {
+			return fmt.Errorf("failed to marshal token index: %w", err)
+		}
+		return bucket.Put(key, raw)
+	})
+}
+
 func (r *kvsRepository) CreateAccessTokenSession(ctx context.Context, signature string, fositeReq fosite.Requester) error {
-	return r.create(ctx, "access_token-"+signature, models.FromFositeReq(fositeReq))
+	return r.createIndexed(accessTokenPrefix, signature, fositeReq)
 }
 
 func (r *kvsRepository) GetAccessTokenSession(ctx context.Context, signature string, sess fosite.Session) (fosite.Requester, error) {
@@ -120,17 +221,23 @@ func (r *kvsRepository) DeleteAccessTokenSession(ctx context.Context, signature 
 }
 
 func (r *kvsRepository) CreateRefreshTokenSession(ctx context.Context, signature string, accessSignature string, req fosite.Requester) (err error) {
-	return r.create(ctx, "refresh_token-"+signature, models.FromFositeReq(req))
+	return r.createIndexed(refreshTokenPrefix, signature, req)
 }
 
+// GetRefreshTokenSession returns fosite.ErrInactiveToken together with the
+// request for a token that was already rotated (outside the grace period), so
+// fosite detects the reuse and revokes the token family.
 func (r *kvsRepository) GetRefreshTokenSession(ctx context.Context, signature string, sess fosite.Session) (fosite.Requester, error) {
 	var req models.Request
-	if err := r.get(ctx, "refresh_token-"+signature, &req); err != nil {
+	if err := r.get(ctx, refreshTokenPrefix+signature, &req); err != nil {
 		return nil, err
 	}
 	fositeReq := req.ToFositeReq()
 	if err := restoreSession(fositeReq, req.SessionData, sess); err != nil {
 		return nil, err
+	}
+	if refreshTokenInactive(req.RotatedAt, time.Now()) {
+		return fositeReq, fosite.ErrInactiveToken
 	}
 	return fositeReq, nil
 }
@@ -139,13 +246,36 @@ func (r *kvsRepository) DeleteRefreshTokenSession(ctx context.Context, signature
 	return r.delete(ctx, "refresh_token-"+signature)
 }
 
+// RotateRefreshToken marks the token as used. It keeps the first rotation time
+// (so retries can't extend the grace period) and fails with
+// fosite.ErrInactiveToken if a concurrent request already rotated it outside
+// the grace period, so one refresh token can't be redeemed twice.
 func (r *kvsRepository) RotateRefreshToken(ctx context.Context, requestID string, signature string) error {
-	var req models.Request
-	if err := r.get(ctx, "refresh_token-"+signature, &req); err != nil {
-		return err
-	}
-	req.RotatedAt = time.Now()
-	return r.update(ctx, "refresh_token-"+signature, req)
+	return r.db.Update(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(r.bucketName))
+		key := []byte(refreshTokenPrefix + signature)
+		raw := bucket.Get(key)
+		if raw == nil {
+			return fosite.ErrNotFound
+		}
+		var req models.Request
+		if err := json.Unmarshal(raw, &req); err != nil {
+			return fmt.Errorf("failed to unmarshal refresh token: %w", err)
+		}
+		now := time.Now()
+		if refreshTokenInactive(req.RotatedAt, now) {
+			return fosite.ErrInactiveToken
+		}
+		if !req.RotatedAt.IsZero() {
+			return nil
+		}
+		req.RotatedAt = now
+		data, err := json.Marshal(req)
+		if err != nil {
+			return fmt.Errorf("failed to marshal value: %w", err)
+		}
+		return bucket.Put(key, data)
+	})
 }
 
 // RevokeRefreshToken revokes a refresh token as specified in:
@@ -156,7 +286,7 @@ func (r *kvsRepository) RotateRefreshToken(ctx context.Context, requestID string
 // also invalidate all access tokens based on the same authorization
 // grant (see Implementation Note).
 func (r *kvsRepository) RevokeRefreshToken(ctx context.Context, requestID string) error {
-	return r.delete(ctx, "refresh_token-"+requestID)
+	return r.revokeFamily(refreshTokenPrefix, requestID)
 }
 
 // RevokeAccessToken revokes an access token as specified in:
@@ -165,7 +295,7 @@ func (r *kvsRepository) RevokeRefreshToken(ctx context.Context, requestID string
 // is an access token, the server MAY revoke the respective refresh
 // token as well.
 func (r *kvsRepository) RevokeAccessToken(ctx context.Context, requestID string) error {
-	return r.delete(ctx, "access_token-"+requestID)
+	return r.revokeFamily(accessTokenPrefix, requestID)
 }
 
 func (r *kvsRepository) RegisterClient(ctx context.Context, fositeClient fosite.Client) error {
