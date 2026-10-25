@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
@@ -263,6 +264,23 @@ func hostOf(rawURL string) string {
 		return rawURL
 	}
 	return u.Host
+}
+
+// sanitizeClientName drops control and format characters (Unicode Cc/Cf,
+// e.g. bidi overrides like U+202E that make "opencode\u202e lmth.exe" render
+// as "opencodeexe.html") from the display-only DCR client_name, collapses
+// whitespace and trims it.
+func sanitizeClientName(name string) string {
+	cleaned := strings.Map(func(r rune) rune {
+		switch {
+		case unicode.IsSpace(r):
+			return ' '
+		case unicode.Is(unicode.Cc, r), unicode.Is(unicode.Cf, r):
+			return -1
+		}
+		return r
+	}, name)
+	return strings.Join(strings.Fields(cleaned), " ")
 }
 
 // describeRedirect returns the label and kind shown for a redirect URI.
@@ -528,7 +546,7 @@ func (a *IDPRouter) handleRegister(c *gin.Context) {
 		c.JSON(500, gin.H{"error": "server_error", "error_description": err.Error()})
 		return
 	}
-	if name := strings.TrimSpace(req.ClientName); name != "" {
+	if name := sanitizeClientName(req.ClientName); name != "" {
 		if r := []rune(name); len(r) > maxClientNameLength {
 			name = string(r[:maxClientNameLength])
 		}
