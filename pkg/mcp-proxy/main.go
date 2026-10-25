@@ -303,7 +303,11 @@ func Run(
 	}
 	branding, err := idp.LoadBranding(authorizeServerName, authorizeLogo, authorizeBanner, authorizeFooter)
 	if err != nil {
-		return fmt.Errorf("failed to load consent page branding: %w", err)
+		// Cosmetic setting: keep serving with the default icon rather than
+		// crash-looping the proxy over a typo.
+		logger.Error("Invalid consent page logo (AUTHORIZE_LOGO), using the default icon", zap.Error(err))
+	} else if branding.InsecureLogoURL() {
+		logger.Warn("Consent page logo (AUTHORIZE_LOGO) uses http://; browsers block it on an https consent page")
 	}
 	idpRouter, err := idp.NewIDPRouter(repo, privKey, logger, externalURL, secret, authRouter, branding)
 	if err != nil {

@@ -363,6 +363,45 @@ func TestLoadBrandingRejectsOversizeLogo(t *testing.T) {
 	require.Contains(t, err.Error(), "over the")
 }
 
+func TestLoadBrandingFallsBackOnBadLogo(t *testing.T) {
+	dir := t.TempDir()
+	for name, logo := range map[string]string{
+		"missing file":   filepath.Join(dir, "nope.png"),
+		"javascript url": "javascript:alert(1)",
+		"data url":       "data:image/png;base64,AAAA",
+		"ftp url":        "ftp://example.com/logo.png",
+	} {
+		b, err := LoadBranding("Trino (staging)", logo, "<b>banner</b>", "footer")
+		require.Error(t, err, name)
+		require.Contains(t, err.Error(), "using the default icon", name)
+		require.Equal(t, "Trino (staging)", b.ServerName, name)
+		require.Equal(t, "<b>banner</b>", b.Banner, name)
+		require.Empty(t, b.logoSrc, name)
+		require.False(t, b.logoDisabled, name)
+		require.Contains(t, b.contentSecurityPolicy(""), "img-src 'none'", name)
+	}
+}
+
+func TestAuthorizePageWithBadLogoShowsDefaultIcon(t *testing.T) {
+	branding, err := LoadBranding("Trino (staging)", "javascript:alert(1)", "", "")
+	require.Error(t, err)
+	server, _, _ := setupTestServerWithBranding(t, branding)
+
+	body := renderAuthorizePage(t, server.URL, "opencode", "http://localhost:3000/callback")
+	require.Contains(t, body, "🔐")
+	require.NotContains(t, body, "javascript:")
+	require.Contains(t, body, "Trino (staging)")
+}
+
+func TestBrandingInsecureLogoURL(t *testing.T) {
+	b, err := LoadBranding("", "http://cdn.example.com/logo.png", "", "")
+	require.NoError(t, err)
+	require.True(t, b.InsecureLogoURL())
+	b, err = LoadBranding("", "https://cdn.example.com/logo.png", "", "")
+	require.NoError(t, err)
+	require.False(t, b.InsecureLogoURL())
+}
+
 // renderWithClient runs the authorize flow with a caller-supplied client (used
 // when the CSP header must also be inspected) and returns the body and CSP.
 func renderWithClient(t *testing.T, client *http.Client, serverURL, clientName, redirectURI string) (string, string) {
