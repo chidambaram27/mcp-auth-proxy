@@ -1,5 +1,8 @@
 # MCP Auth Proxy
 
+> **This is a fork** of [sigbit/mcp-auth-proxy](https://github.com/sigbit/mcp-auth-proxy), maintained at
+> [chidambaram27/mcp-auth-proxy](https://github.com/chidambaram27/mcp-auth-proxy). See [Fork changes](#fork-changes).
+
 ![Secure your MCP server with OAuth 2.1 — in a minute](./mcp-auth-proxy.svg)
 
 > If you found value here, please consider starring.
@@ -71,3 +74,22 @@ _Note_: They are not mutually exclusive. You can **put `mcp-auth-proxy` in front
 | Cursor            | ✅     |                                                  |
 
 - \*1: https://platform.openai.com/docs/mcp
+
+## Fork changes
+
+This fork tracks upstream `main` and adds a small set of changes on top. Each change lands as its
+own PR and its own release, so the delta to upstream is visible in the
+[releases](https://github.com/chidambaram27/mcp-auth-proxy/releases) list.
+
+- **Versioning**: `vX.Y.Z-fork.N` — `X.Y.Z` is the upstream release the fork is based on, `N` counts
+  fork releases on top of it (reset to `1` after rebasing onto a new upstream release).
+- **Image**: `ghcr.io/chidambaram27/mcp-auth-proxy:vX.Y.Z-fork.N` (multi-arch amd64/arm64), plus the
+  moving tags `fork` and `latest-fork`. There are no `latest`, `main` or bare semver tags.
+- **Releases**: created manually with
+  `gh release create vX.Y.Z-fork.N -R chidambaram27/mcp-auth-proxy --target main --generate-notes`;
+  publishing the release builds and pushes the image and attaches binaries.
+- `mcp-auth-proxy --version` prints the release tag the binary was built from.
+
+| Release | Change |
+| ------- | ------ |
+| _unreleased_ | Fork CI/release plumbing (this section, image tags, `--version`) |
