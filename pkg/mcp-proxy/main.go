@@ -327,13 +327,7 @@ func Run(
 	})
 
 	router.Use(ginzap.Ginzap(logger, time.RFC3339, true))
-	router.Use(ginzap.CustomRecoveryWithZap(logger, true, func(c *gin.Context, err any) {
-		if err == http.ErrAbortHandler {
-			c.Abort()
-			return
-		}
-		c.AbortWithStatus(http.StatusInternalServerError)
-	}))
+	router.Use(recoveryMiddleware(logger))
 	store := cookie.NewStore(secret)
 	store.Options(sessions.Options{
 		Path:     "/",
