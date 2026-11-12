@@ -81,6 +81,11 @@ const (
 	SessionKeyUserInfo    = "user_info"
 	// SessionKeyAuthTime holds the Unix time of the last successful login.
 	SessionKeyAuthTime = "auth_time"
+	// SessionKeyProvider holds the type of the provider used to log in.
+	SessionKeyProvider = "provider"
+	// SessionKeyAuthzFacts holds the JSON-encoded allowlist inputs recorded
+	// at login (see Reauthorizer).
+	SessionKeyAuthzFacts = "authz_facts"
 )
 
 func (a *AuthRouter) SetupRoutes(router gin.IRouter) {
@@ -112,6 +117,7 @@ func (a *AuthRouter) SetupRoutes(router gin.IRouter) {
 			session.Set(SessionKeyAuthorized, true)
 			session.Set(SessionKeyUserID, user)
 			session.Set(SessionKeyAuthTime, time.Now().Unix())
+			setSessionIdentity(session, provider, userInfo)
 			if userInfo != nil {
 				if len(a.userInfoFields) > 0 {
 					userInfo = filterUserInfo(userInfo, a.userInfoFields)
@@ -202,6 +208,8 @@ func (a *AuthRouter) handleLoginPost(c *gin.Context) {
 	session.Set(SessionKeyAuthorized, true)
 	session.Set(SessionKeyUserID, PasswordUserID)
 	session.Set(SessionKeyAuthTime, time.Now().Unix())
+	session.Set(SessionKeyProvider, PasswordProvider)
+	session.Delete(SessionKeyAuthzFacts)
 	redirectURL := session.Get(SessionKeyRedirectURL)
 	if redirectURL != nil {
 		session.Delete(SessionKeyRedirectURL)

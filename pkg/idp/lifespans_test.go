@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sigbit/mcp-auth-proxy/v2/pkg/auth"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2"
 )
@@ -47,7 +48,14 @@ func TestNewIDPRouterRejectsInvalidLifespans(t *testing.T) {
 
 func lifespanTestTokens(t *testing.T, lifespans TokenLifespans, codeDelay time.Duration) (string, registrationResponse, *http.Response) {
 	t.Helper()
-	server, _, _ := setupTestServerWith(t, Branding{}, lifespans)
+	return issueTestTokens(t, &testProvider{}, lifespans, func() { time.Sleep(codeDelay) })
+}
+
+// issueTestTokens runs the authorization code flow and exchanges the code.
+// beforeExchange runs between the authorization and the code exchange.
+func issueTestTokens(t *testing.T, provider auth.Provider, lifespans TokenLifespans, beforeExchange func()) (string, registrationResponse, *http.Response) {
+	t.Helper()
+	server, _, _ := setupTestServerWithProvider(t, Branding{}, lifespans, provider)
 	regResp := registerTestClient(t, server.URL)
 	config := &oauth2.Config{
 		ClientID:     regResp.ClientID,
@@ -56,7 +64,7 @@ func lifespanTestTokens(t *testing.T, lifespans TokenLifespans, codeDelay time.D
 		Endpoint:     oauth2.Endpoint{AuthURL: server.URL + AuthorizationEndpoint, TokenURL: server.URL + TokenEndpoint},
 	}
 	callbackURL := testAuthFlowWithURL(t, server.URL, config.AuthCodeURL("test-state"))
-	time.Sleep(codeDelay)
+	beforeExchange()
 	resp, err := http.PostForm(server.URL+TokenEndpoint, url.Values{
 		"grant_type":    {"authorization_code"},
 		"code":          {callbackURL.Query().Get("code")},
