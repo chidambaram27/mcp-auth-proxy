@@ -27,6 +27,24 @@ func sessionAuthTime(session sessions.Session, now time.Time) time.Time {
 	return now.UTC().Truncate(time.Second)
 }
 
+// stillAuthorized re-checks the user behind a token request against the
+// current allowlist, so users removed from it cannot keep refreshing tokens.
+func (a *IDPRouter) stillAuthorized(req fosite.AccessRequester) bool {
+	s, ok := req.GetSession().(*Session)
+	if !ok || a.authRouter == nil {
+		return true
+	}
+	id := auth.Identity{
+		Provider: s.Provider,
+		UserID:   s.GetSubject(),
+		Facts:    s.AuthzFacts,
+	}
+	if s.JWTClaims != nil {
+		id.UserInfo, _ = s.JWTClaims.Extra["userinfo"].(map[string]any)
+	}
+	return a.authRouter.Reauthorize(id)
+}
+
 // applySessionPolicy runs for every token request after fosite has validated
 // it and before tokens are issued:
 //   - iat/nbf are set to the issue time (refreshes used to keep the login iat)
