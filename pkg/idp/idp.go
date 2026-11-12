@@ -51,7 +51,11 @@ func NewIDPRouter(
 	secret []byte,
 	authRouter *auth.AuthRouter,
 	branding Branding,
+	lifespans TokenLifespans,
 ) (*IDPRouter, error) {
+	if err := lifespans.Validate(); err != nil {
+		return nil, err
+	}
 	hasher := &fosite.BCrypt{
 		Config: &fosite.Config{
 			HashCost: bcrypt.DefaultCost,
@@ -59,8 +63,9 @@ func NewIDPRouter(
 	}
 	config := &fosite.Config{
 		GlobalSecret:                   secret,
-		AccessTokenLifespan:            24 * time.Hour,
-		RefreshTokenLifespan:           30 * 24 * time.Hour,
+		AccessTokenLifespan:            lifespans.AccessToken,
+		RefreshTokenLifespan:           lifespans.RefreshToken,
+		AuthorizeCodeLifespan:          lifespans.AuthorizeCode,
 		RefreshTokenScopes:             []string{},
 		AccessTokenIssuer:              externalURL,
 		EnforcePKCE:                    false,

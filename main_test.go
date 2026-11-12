@@ -3,6 +3,9 @@ package main
 import (
 	"reflect"
 	"testing"
+	"time"
+
+	"github.com/sigbit/mcp-auth-proxy/v2/pkg/idp"
 )
 
 func TestSplitWithEscapes(t *testing.T) {
@@ -444,6 +447,7 @@ func TestNewRootCommand_HTTPStreamingOnlyFlag(t *testing.T) {
 		authorizeLogo string,
 		authorizeBanner string,
 		authorizeFooter string,
+		tokenLifespans idp.TokenLifespans,
 	) error {
 		streamingOnly = httpStreamingOnly
 		receivedTargets = proxyTarget
@@ -516,6 +520,7 @@ func TestNewRootCommand_HTTPStreamingOnlyFromEnv(t *testing.T) {
 		authorizeLogo string,
 		authorizeBanner string,
 		authorizeFooter string,
+		tokenLifespans idp.TokenLifespans,
 	) error {
 		streamingOnly = httpStreamingOnly
 		return nil
@@ -584,6 +589,7 @@ func TestNewRootCommand_ForwardAuthorizationFlag(t *testing.T) {
 		authorizeLogo string,
 		authorizeBanner string,
 		authorizeFooter string,
+		tokenLifespans idp.TokenLifespans,
 	) error {
 		forwardAuthorization = forwardAuthorizationHeader
 		return nil
@@ -652,6 +658,7 @@ func TestNewRootCommand_ForwardAuthorizationFromEnv(t *testing.T) {
 		authorizeLogo string,
 		authorizeBanner string,
 		authorizeFooter string,
+		tokenLifespans idp.TokenLifespans,
 	) error {
 		forwardAuthorization = forwardAuthorizationHeader
 		return nil
@@ -666,5 +673,81 @@ func TestNewRootCommand_ForwardAuthorizationFromEnv(t *testing.T) {
 
 	if !forwardAuthorization {
 		t.Fatalf("expected forwardAuthorizationHeader to default to true from env var")
+	}
+}
+
+func runWithLifespans(t *testing.T, args []string) (idp.TokenLifespans, error) {
+	t.Helper()
+	var got idp.TokenLifespans
+	runner := proxyRunnerFunc(func(listen, tlsListen string, autoTLS bool, tlsHost, tlsDirectoryURL string, tlsAcceptTOS bool,
+		tlsCertFile, tlsKeyFile, dataPath, repositoryBackend, repositoryDSN, externalURL, googleClientID, googleClientSecret string,
+		googleAllowedUsers, googleAllowedWorkspaces []string, githubURL, githubAPIURL, githubClientID, githubClientSecret string,
+		githubAllowedUsers, githubAllowedOrgs []string, oidcConfigurationURL, oidcClientID, oidcClientSecret string, oidcScopes []string,
+		oidcUserIDField, oidcProviderName string, oidcAllowedUsers, oidcAllowedUsersGlob []string,
+		oidcAllowedAttributes, oidcAllowedAttributesGlob map[string][]string, noProviderAutoSelect bool, password, passwordHash string,
+		trustedProxy, proxyHeaders []string, proxyBearerToken string, forwardAuthorizationHeader bool, proxyTarget []string,
+		httpStreamingOnly bool, headerMapping map[string]string, headerMappingBase, authorizeServerName, authorizeLogo,
+		authorizeBanner, authorizeFooter string, tokenLifespans idp.TokenLifespans,
+	) error {
+		got = tokenLifespans
+		return nil
+	})
+	cmd := newRootCommand(runner)
+	cmd.SetArgs(args)
+	cmd.SilenceErrors = true
+	err := cmd.Execute()
+	return got, err
+}
+
+func TestNewRootCommand_TokenLifespans(t *testing.T) {
+	t.Run("defaults match upstream", func(t *testing.T) {
+		t.Setenv("ACCESS_TOKEN_LIFESPAN", "")
+		t.Setenv("REFRESH_TOKEN_LIFESPAN", "")
+		t.Setenv("AUTHORIZE_CODE_LIFESPAN", "")
+		got, err := runWithLifespans(t, []string{"http://backend"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := idp.TokenLifespans{AccessToken: 24 * time.Hour, RefreshToken: 720 * time.Hour, AuthorizeCode: 15 * time.Minute}
+		if got != want {
+			t.Fatalf("got %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("from env", func(t *testing.T) {
+		t.Setenv("ACCESS_TOKEN_LIFESPAN", "2m")
+		t.Setenv("REFRESH_TOKEN_LIFESPAN", "5m")
+		t.Setenv("AUTHORIZE_CODE_LIFESPAN", "30s")
+		got, err := runWithLifespans(t, []string{"http://backend"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := idp.TokenLifespans{AccessToken: 2 * time.Minute, RefreshToken: 5 * time.Minute, AuthorizeCode: 30 * time.Second}
+		if got != want {
+			t.Fatalf("got %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("flags override env", func(t *testing.T) {
+		t.Setenv("ACCESS_TOKEN_LIFESPAN", "2m")
+		got, err := runWithLifespans(t, []string{"--access-token-lifespan", "1h", "--refresh-token-lifespan", "168h", "http://backend"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.AccessToken != time.Hour || got.RefreshToken != 168*time.Hour {
+			t.Fatalf("got %+v", got)
+		}
+	})
+
+	for _, bad := range [][]string{
+		{"--access-token-lifespan", "1d"},
+		{"--refresh-token-lifespan", "0s"},
+		{"--authorize-code-lifespan", "-1m"},
+	} {
+		t.Run("rejects "+bad[0]+"="+bad[1], func(t *testing.T) {
+			if _, err := runWithLifespans(t, append(bad, "http://backend")); err == nil {
+				t.Fatalf("expected error for %v", bad)
+			}
+		})
 	}
 }

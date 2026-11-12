@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/sigbit/mcp-auth-proxy/v2/pkg/idp"
 	mcpproxy "github.com/sigbit/mcp-auth-proxy/v2/pkg/mcp-proxy"
 	"github.com/spf13/cobra"
 )
@@ -171,6 +172,7 @@ type proxyRunnerFunc func(
 	authorizeLogo string,
 	authorizeBanner string,
 	authorizeFooter string,
+	tokenLifespans idp.TokenLifespans,
 ) error
 
 func main() {
@@ -228,6 +230,9 @@ func newRootCommand(run proxyRunnerFunc) *cobra.Command {
 	var authorizeLogo string
 	var authorizeBanner string
 	var authorizeFooter string
+	var accessTokenLifespan string
+	var refreshTokenLifespan string
+	var authorizeCodeLifespan string
 
 	rootCmd := &cobra.Command{
 		Use: "mcp-warp",
@@ -258,6 +263,11 @@ func newRootCommand(run proxyRunnerFunc) *cobra.Command {
 			proxyHeadersList := splitCSV(proxyHeaders)
 
 			headerMappingMap := parseHeaderMapping(headerMapping)
+
+			tokenLifespans, err := idp.ParseTokenLifespans(accessTokenLifespan, refreshTokenLifespan, authorizeCodeLifespan)
+			if err != nil {
+				return err
+			}
 
 			if err := run(
 				listen,
@@ -307,6 +317,7 @@ func newRootCommand(run proxyRunnerFunc) *cobra.Command {
 				authorizeLogo,
 				authorizeBanner,
 				authorizeFooter,
+				tokenLifespans,
 			); err != nil {
 				return err
 			}
@@ -372,6 +383,11 @@ func newRootCommand(run proxyRunnerFunc) *cobra.Command {
 	rootCmd.Flags().StringVar(&authorizeLogo, "authorize-logo", getEnvWithDefault("AUTHORIZE_LOGO", ""), "Logo for the consent page: a file path (PNG/JPG/SVG/GIF/WebP, inlined at startup) or an http(s) URL. Use \"-\" to hide the default icon.")
 	rootCmd.Flags().StringVar(&authorizeBanner, "authorize-banner", getEnvWithDefault("AUTHORIZE_BANNER", ""), "Custom (HTML) banner shown above the request details on the consent page. Use \"-\" to hide the default message.")
 	rootCmd.Flags().StringVar(&authorizeFooter, "authorize-footer", getEnvWithDefault("AUTHORIZE_FOOTER", ""), "Custom (HTML) footer shown at the bottom of the consent page. Use \"-\" to hide the default footer.")
+
+	// Token lifespans
+	rootCmd.Flags().StringVar(&accessTokenLifespan, "access-token-lifespan", getEnvWithDefault("ACCESS_TOKEN_LIFESPAN", idp.DefaultAccessTokenLifespan.String()), "Lifetime of issued access tokens (Go duration, e.g. 1h, 30m)")
+	rootCmd.Flags().StringVar(&refreshTokenLifespan, "refresh-token-lifespan", getEnvWithDefault("REFRESH_TOKEN_LIFESPAN", idp.DefaultRefreshTokenLifespan.String()), "Lifetime of issued refresh tokens (Go duration, e.g. 168h). Each refresh issues a new refresh token with a fresh lifetime")
+	rootCmd.Flags().StringVar(&authorizeCodeLifespan, "authorize-code-lifespan", getEnvWithDefault("AUTHORIZE_CODE_LIFESPAN", idp.DefaultAuthorizeCodeLifespan.String()), "Lifetime of authorization codes (Go duration, e.g. 5m)")
 
 	return rootCmd
 }

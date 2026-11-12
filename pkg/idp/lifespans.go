@@ -1,0 +1,65 @@
+package idp
+
+import (
+	"fmt"
+	"time"
+)
+
+const (
+	DefaultAccessTokenLifespan   = 24 * time.Hour
+	DefaultRefreshTokenLifespan  = 30 * 24 * time.Hour
+	DefaultAuthorizeCodeLifespan = 15 * time.Minute
+)
+
+// TokenLifespans configures how long tokens issued by the built-in
+// authorization server stay valid.
+type TokenLifespans struct {
+	AccessToken   time.Duration
+	RefreshToken  time.Duration
+	AuthorizeCode time.Duration
+}
+
+// DefaultTokenLifespans returns the upstream lifespans (24h access token,
+// 30d refresh token, 15m authorization code).
+func DefaultTokenLifespans() TokenLifespans {
+	return TokenLifespans{
+		AccessToken:   DefaultAccessTokenLifespan,
+		RefreshToken:  DefaultRefreshTokenLifespan,
+		AuthorizeCode: DefaultAuthorizeCodeLifespan,
+	}
+}
+
+// ParseTokenLifespans parses Go duration strings (e.g. "1h", "720h", "90s").
+// Every value must be positive.
+func ParseTokenLifespans(accessToken, refreshToken, authorizeCode string) (TokenLifespans, error) {
+	var l TokenLifespans
+	for _, f := range []struct {
+		name  string
+		value string
+		dst   *time.Duration
+	}{
+		{"access token lifespan", accessToken, &l.AccessToken},
+		{"refresh token lifespan", refreshToken, &l.RefreshToken},
+		{"authorize code lifespan", authorizeCode, &l.AuthorizeCode},
+	} {
+		d, err := time.ParseDuration(f.value)
+		if err != nil {
+			return TokenLifespans{}, fmt.Errorf("invalid %s %q: %w", f.name, f.value, err)
+		}
+		*f.dst = d
+	}
+	return l, l.Validate()
+}
+
+func (l TokenLifespans) Validate() error {
+	if l.AccessToken <= 0 {
+		return fmt.Errorf("access token lifespan must be positive, got %s", l.AccessToken)
+	}
+	if l.RefreshToken <= 0 {
+		return fmt.Errorf("refresh token lifespan must be positive, got %s", l.RefreshToken)
+	}
+	if l.AuthorizeCode <= 0 {
+		return fmt.Errorf("authorize code lifespan must be positive, got %s", l.AuthorizeCode)
+	}
+	return nil
+}
