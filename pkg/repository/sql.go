@@ -50,6 +50,13 @@ type clientRecord struct {
 	UpdatedAt time.Time
 }
 
+type clientNameRecord struct {
+	ClientID  string `gorm:"primaryKey;size:512"`
+	Name      string `gorm:"not null"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
 type pkceRequestSession struct {
 	Signature string `gorm:"primaryKey;size:512"`
 	Request   []byte `gorm:"not null"`
@@ -94,6 +101,7 @@ func NewSQLRepository(driver string, dsn string) (Repository, error) {
 		&accessTokenSession{},
 		&refreshTokenSession{},
 		&clientRecord{},
+		&clientNameRecord{},
 		&pkceRequestSession{},
 		&authorizeRequestRecord{},
 	); err != nil {
@@ -260,6 +268,23 @@ func (r *sqlRepository) GetClient(ctx context.Context, id string) (fosite.Client
 	}
 
 	return unmarshalClient(record.Client)
+}
+
+func (r *sqlRepository) SetClientName(ctx context.Context, clientID string, name string) error {
+	return r.db.WithContext(ctx).
+		Clauses(clause.OnConflict{UpdateAll: true}).
+		Create(&clientNameRecord{ClientID: clientID, Name: name}).Error
+}
+
+func (r *sqlRepository) GetClientName(ctx context.Context, clientID string) (string, error) {
+	var record clientNameRecord
+	if err := r.db.WithContext(ctx).First(&record, "client_id = ?", clientID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", nil
+		}
+		return "", fmt.Errorf("failed to load client name: %w", err)
+	}
+	return record.Name, nil
 }
 
 func (r *sqlRepository) ClientAssertionJWTValid(ctx context.Context, jti string) error {

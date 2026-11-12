@@ -150,6 +150,26 @@ openssl rand -base64 32
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048
 ```
 
+### Consent Page Branding Options
+
+These options customize the consent (authorize) page that users see when an MCP client asks for access. All are optional; when unset, the page shows the external host, a built-in icon and the default texts.
+
+| Option                    | Environment Variable    | Default | Description                                                                                                                                |
+| ------------------------- | ----------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--authorize-server-name` | `AUTHORIZE_SERVER_NAME` | -       | Friendly name shown instead of the external host (e.g. `Trino (staging)`). Plain text, HTML-escaped                                        |
+| `--authorize-logo`        | `AUTHORIZE_LOGO`        | -       | Logo: a file path (PNG/JPG/SVG/GIF/WebP, max 512 KiB, inlined as a `data:` URI at startup) or an `http(s)` URL. `-` hides the default icon |
+| `--authorize-banner`      | `AUTHORIZE_BANNER`      | -       | HTML banner shown above the request details. `-` hides the default message                                                                 |
+| `--authorize-footer`      | `AUTHORIZE_FOOTER`      | -       | HTML footer shown at the bottom of the page. `-` hides the default footer                                                                  |
+
+`AUTHORIZE_BANNER` and `AUTHORIZE_FOOTER` are rendered as trusted HTML (operator-controlled). The page sends a strict Content Security Policy (`default-src 'none'`, no scripts, `frame-ancestors 'none'`): `img-src` is `'none'` unless a logo is configured (then `data:` for a file logo or the logo URL's origin), and `form-action` allows `'self'` plus the origin of the client's (already validated) redirect URI. The client name registered via dynamic client registration is shown HTML-escaped.
+
+```bash title="Example"
+--authorize-server-name "Trino (staging)" \
+--authorize-logo "https://example.com/logo.png" \
+--authorize-banner "<strong>Example MCP</strong> &mdash; authorize access to <strong>Trino (staging)</strong>." \
+--authorize-footer "Questions? Reach out in <strong>#support</strong>."
+```
+
 ### Server Options
 
 | Option         | Environment Variable | Default  | Description                  |
