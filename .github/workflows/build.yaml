@@ -54,7 +54,8 @@ jobs:
           GOOS: ${{ matrix.env.os }}
           GOARCH: ${{ matrix.env.arch }}
           CGO_ENABLED: 0
-        run: go build -o bin/${{ matrix.env.name }} .
+          VERSION: ${{ github.event_name == 'release' && github.event.release.tag_name || github.sha }}
+        run: go build -trimpath -ldflags "-X main.version=${VERSION}" -o bin/${{ matrix.env.name }} .
 
       - name: Publish artifacts
         uses: actions/upload-artifact@v7
