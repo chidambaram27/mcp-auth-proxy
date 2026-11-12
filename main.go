@@ -177,7 +177,7 @@ func main() {
 	rootCmd := newRootCommand(mcpproxy.Run)
 	rootCmd.Version = version
 	if err := rootCmd.Execute(); err != nil {
-		panic(err)
+		os.Exit(1)
 	}
 }
 
@@ -231,7 +231,10 @@ func newRootCommand(run proxyRunnerFunc) *cobra.Command {
 
 	rootCmd := &cobra.Command{
 		Use: "mcp-warp",
-		Run: func(cmd *cobra.Command, args []string) {
+		// Errors from run are startup/config errors: print them once, without
+		// the usage text, and exit non-zero (no panic stack trace).
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
 			googleAllowedUsersList := splitCSV(googleAllowedUsers)
 			googleAllowedWorkspacesList := splitCSV(googleAllowedWorkspaces)
 			githubAllowedUsersList := splitCSV(githubAllowedUsers)
@@ -305,8 +308,9 @@ func newRootCommand(run proxyRunnerFunc) *cobra.Command {
 				authorizeBanner,
 				authorizeFooter,
 			); err != nil {
-				panic(err)
+				return err
 			}
+			return nil
 		},
 	}
 

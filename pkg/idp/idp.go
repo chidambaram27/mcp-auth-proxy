@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
@@ -211,12 +212,7 @@ func (a *IDPRouter) handleAuthorizationReturnForm(c *gin.Context) {
 	}
 	formActionSource := ""
 	if redirectURI := ar.GetRedirectURI(); redirectURI != nil {
-		data.RedirectHost = redirectURI.Host
-		data.RedirectIsLocal = isLoopbackHost(redirectURI.Hostname())
-		if data.RedirectHost == "" {
-			// Custom-scheme redirect (e.g. cursor://...): show the scheme.
-			data.RedirectHost = redirectURI.Scheme + ":"
-		}
+		data.RedirectHost, data.RedirectKind = describeRedirect(redirectURI)
 		formActionSource = redirectCSPSource(redirectURI)
 	}
 
@@ -231,13 +227,15 @@ func (a *IDPRouter) handleAuthorizationReturnForm(c *gin.Context) {
 }
 
 type authorizePageData struct {
-	ClientName      string
-	ServerHost      string
-	ServerName      string
-	User            string
-	RedirectHost    string
-	RedirectIsLocal bool
-	Scopes          []string
+	ClientName   string
+	ServerHost   string
+	ServerName   string
+	User         string
+	RedirectHost string
+	// RedirectKind is "local" (loopback http), "app" (custom scheme, handled
+	// by an installed application) or "remote" (any other http(s) host).
+	RedirectKind string
+	Scopes       []string
 	// LogoSrc is a safe <img src> value (data URI or http(s) URL) resolved
 	// at startup from trusted operator config; empty means no logo image.
 	LogoSrc template.URL
@@ -266,6 +264,38 @@ func hostOf(rawURL string) string {
 		return rawURL
 	}
 	return u.Host
+}
+
+// sanitizeClientName drops control and format characters (Unicode Cc/Cf,
+// e.g. bidi overrides like U+202E that make "opencode\u202e lmth.exe" render
+// as "opencodeexe.html") from the display-only DCR client_name, collapses
+// whitespace and trims it.
+func sanitizeClientName(name string) string {
+	cleaned := strings.Map(func(r rune) rune {
+		switch {
+		case unicode.IsSpace(r):
+			return ' '
+		case unicode.Is(unicode.Cc, r), unicode.Is(unicode.Cf, r):
+			return -1
+		}
+		return r
+	}, name)
+	return strings.Join(strings.Fields(cleaned), " ")
+}
+
+// describeRedirect returns the label and kind shown for a redirect URI.
+// Custom schemes (cursor://host/..., com.example.app:/...) are labelled with
+// the scheme only: the browser hands them to whichever app registered the
+// scheme, so the "host" part is not a network destination.
+func describeRedirect(u *url.URL) (label, kind string) {
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return scheme + ":", "app"
+	}
+	if isLoopbackHost(u.Hostname()) {
+		return u.Host, "local"
+	}
+	return u.Host, "remote"
 }
 
 func isLoopbackHost(host string) bool {
@@ -313,6 +343,17 @@ func (a *IDPRouter) handleAuthorizationReturn(c *gin.Context) {
 			a.logger.Error("Failed to delete authorize requester", zap.Error(err))
 		}
 	}()
+
+	if c.PostForm("action") == "deny" {
+		removeAuthorizeRequestID(session, arID)
+		if err := session.Save(); err != nil {
+			a.logger.Error("Failed to remove authorize request from session", zap.Error(err))
+		}
+		// RFC 6749 4.1.2.1: tell the client the user declined, so it can stop
+		// waiting instead of hanging until the user closes the tab.
+		a.provider.WriteAuthorizeError(ctx, c.Writer, ar, fosite.ErrAccessDenied.WithDescription("The user denied the request.").WithHint("The user chose Deny on the consent page."))
+		return
+	}
 
 	for _, scope := range ar.GetRequestedScopes() {
 		ar.GrantScope(scope)
@@ -516,7 +557,7 @@ func (a *IDPRouter) handleRegister(c *gin.Context) {
 		c.JSON(500, gin.H{"error": "server_error", "error_description": err.Error()})
 		return
 	}
-	if name := strings.TrimSpace(req.ClientName); name != "" {
+	if name := sanitizeClientName(req.ClientName); name != "" {
 		if r := []rune(name); len(r) > maxClientNameLength {
 			name = string(r[:maxClientNameLength])
 		}

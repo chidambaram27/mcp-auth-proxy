@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/sigbit/mcp-auth-proxy/v2/pkg/auth"
 )
 
 // Branding holds the optional customisation of the consent (authorize) page.
@@ -50,6 +52,11 @@ const (
 // file path or a URL, like oauth2-proxy's --custom-sign-in-logo: a path is
 // read and inlined as a data URI (so it survives a read-only filesystem and
 // needs no request-time file access), a URL is passed through to <img src>.
+//
+// An unusable logo (missing/oversized/unsupported file, non-http(s) URL) is
+// reported as an error, but the returned Branding is still valid: it keeps the
+// other options and falls back to the built-in icon, so callers can log the
+// error and keep serving instead of failing startup over a cosmetic setting.
 func LoadBranding(serverName, logo, banner, footer string) (Branding, error) {
 	b := Branding{
 		ServerName: strings.TrimSpace(serverName),
@@ -66,16 +73,32 @@ func LoadBranding(serverName, logo, banner, footer string) (Branding, error) {
 	case isHTTPURL(logo):
 		b.logoSrc = logo
 		b.logoCSPSource = cspSourceForURL(logo)
+	case hasURLScheme(logo):
+		return b, fmt.Errorf("unsupported logo URL %q (want an http(s) URL or a file path); using the default icon", logo)
 	default:
 		src, err := inlineLogoFile(logo)
 		if err != nil {
-			return Branding{}, err
+			return b, fmt.Errorf("%w; using the default icon", err)
 		}
 		b.logoSrc = src
 		b.logoCSPSource = "data:"
 	}
 
 	return b, nil
+}
+
+// InsecureLogoURL reports whether the logo is loaded over plain http, which
+// browsers block or upgrade as mixed content on an https consent page.
+func (b Branding) InsecureLogoURL() bool {
+	return strings.HasPrefix(strings.ToLower(b.logoSrc), "http://")
+}
+
+// hasURLScheme reports whether s looks like "scheme:..." rather than a file
+// path (e.g. "javascript:alert(1)", "data:...", "ftp://host/logo.png").
+// Windows drive letters ("C:\\logo.png") are treated as paths.
+func hasURLScheme(s string) bool {
+	u, err := url.Parse(s)
+	return err == nil && len(u.Scheme) > 1
 }
 
 func isHTTPURL(s string) bool {
@@ -137,10 +160,7 @@ func logoMediaType(path string) (string, error) {
 // source for that redirect URI (see redirectCSPSource); empty allows 'self'
 // only.
 func (b Branding) contentSecurityPolicy(formActionSource string) string {
-	imgSrc := "'none'"
-	if !b.logoDisabled && b.logoSrc != "" && b.logoCSPSource != "" {
-		imgSrc = b.logoCSPSource
-	}
+	imgSrc := b.imgSrc()
 	formAction := "'self'"
 	if formActionSource != "" {
 		formAction += " " + formActionSource
@@ -154,17 +174,19 @@ var (
 )
 
 // redirectCSPSource returns the CSP source expression matching a redirect
-// URI: "scheme://host[:port]" when the host is a valid CSP host-source, the
-// bare scheme ("cursor:") for custom-scheme or IPv6 redirects, and "" when
-// the URI cannot be expressed safely. The redirect URI is client-registered
-// (DCR), so anything that could inject CSP syntax is rejected rather than
-// escaped.
+// URI: "scheme://host[:port]" for http(s) URIs whose host is a valid CSP
+// host-source, otherwise the bare scheme ("cursor:", "http:" for IPv6). Browsers
+// do not match host-sources against custom schemes (Chrome blocks
+// "cursor://host" even though the redirect is exactly that), so custom schemes
+// always use the scheme-source. Returns "" when the URI cannot be expressed
+// safely. The redirect URI is client-registered (DCR), so anything that could
+// inject CSP syntax is rejected rather than escaped.
 func redirectCSPSource(u *url.URL) string {
 	if u == nil || !cspSchemePattern.MatchString(u.Scheme) {
 		return ""
 	}
 	scheme := strings.ToLower(u.Scheme)
-	if u.Host != "" && cspHostPattern.MatchString(u.Host) {
+	if (scheme == "http" || scheme == "https") && u.Host != "" && cspHostPattern.MatchString(u.Host) {
 		return scheme + "://" + u.Host
 	}
 	return scheme + ":"
@@ -216,4 +238,26 @@ func (b Branding) effectiveFooter() template.HTML {
 // footerDisabled reports whether the operator passed "-" to hide the footer.
 func (b Branding) footerDisabled() bool {
 	return strings.TrimSpace(b.Footer) == brandingDisable
+}
+
+// PageBranding returns the branding subset reused by the auth pages (e.g.
+// the Access Denied page).
+func (b Branding) PageBranding() auth.PageBranding {
+	return auth.PageBranding{
+		ServerName:     b.ServerName,
+		LogoSrc:        b.logoURL(),
+		HideIcon:       b.logoDisabled,
+		Footer:         b.effectiveFooter(),
+		FooterDisabled: b.footerDisabled(),
+		ImgSrc:         b.imgSrc(),
+	}
+}
+
+// imgSrc is the CSP img-src value: only the configured logo source, else
+// 'none'.
+func (b Branding) imgSrc() string {
+	if !b.logoDisabled && b.logoSrc != "" && b.logoCSPSource != "" {
+		return b.logoCSPSource
+	}
+	return "'none'"
 }

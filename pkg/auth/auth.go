@@ -30,6 +30,7 @@ type AuthRouter struct {
 	// stripped before the data is stored in the session cookie. This
 	// prevents oversized cookies when the provider returns many claims.
 	userInfoFields []string
+	branding       PageBranding
 }
 
 func NewAuthRouter(passwordHash []string, noProviderAutoSelect bool, userInfoFields []string, providers ...Provider) (*AuthRouter, error) {
@@ -254,6 +255,15 @@ type loginTemplateData struct {
 type unauthorizedTemplateData struct {
 	UserID   string
 	Provider string
+	Branding PageBranding
+}
+
+// ServerLabel is the friendly server name, or the product name by default.
+func (d unauthorizedTemplateData) ServerLabel() string {
+	if d.Branding.ServerName != "" {
+		return d.Branding.ServerName
+	}
+	return "MCP Auth Proxy"
 }
 
 type errorTemplateData struct {
@@ -282,8 +292,9 @@ func (a *AuthRouter) renderUnauthorized(c *gin.Context, userID, providerName str
 	data := unauthorizedTemplateData{
 		UserID:   userID,
 		Provider: providerName,
+		Branding: a.branding,
 	}
-	c.Header("Content-Type", "text/html; charset=utf-8")
+	a.setPageSecurityHeaders(c)
 	c.Status(http.StatusForbidden)
 	if err := a.unauthorizedTemplate.Execute(c.Writer, data); err != nil {
 		c.AbortWithError(http.StatusInternalServerError, err)
@@ -306,7 +317,7 @@ func (a *AuthRouter) renderError(c *gin.Context, err error) {
 	data := errorTemplateData{
 		ErrorMessage: err.Error(),
 	}
-	c.Header("Content-Type", "text/html; charset=utf-8")
+	a.setPageSecurityHeaders(c)
 	c.Status(http.StatusInternalServerError)
 	if templateErr := a.errorTemplate.Execute(c.Writer, data); templateErr != nil {
 		c.AbortWithError(http.StatusInternalServerError, templateErr)

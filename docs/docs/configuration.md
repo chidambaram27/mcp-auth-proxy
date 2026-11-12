@@ -161,7 +161,9 @@ These options customize the consent (authorize) page that users see when an MCP 
 | `--authorize-banner`      | `AUTHORIZE_BANNER`      | -       | HTML banner shown above the request details. `-` hides the default message                                                                 |
 | `--authorize-footer`      | `AUTHORIZE_FOOTER`      | -       | HTML footer shown at the bottom of the page. `-` hides the default footer                                                                  |
 
-`AUTHORIZE_BANNER` and `AUTHORIZE_FOOTER` are rendered as trusted HTML (operator-controlled). The page sends a strict Content Security Policy (`default-src 'none'`, no scripts, `frame-ancestors 'none'`): `img-src` is `'none'` unless a logo is configured (then `data:` for a file logo or the logo URL's origin), and `form-action` allows `'self'` plus the origin of the client's (already validated) redirect URI. The client name registered via dynamic client registration is shown HTML-escaped.
+`AUTHORIZE_BANNER` and `AUTHORIZE_FOOTER` are rendered as trusted HTML (operator-controlled). The page sends a strict Content Security Policy (`default-src 'none'`, no scripts, `frame-ancestors 'none'`): `img-src` is `'none'` unless a logo is configured (then `data:` for a file logo or the logo URL's origin), and `form-action` allows `'self'` plus the origin of the client's (already validated) redirect URI. The client name registered via dynamic client registration is shown HTML-escaped, with control and invisible formatting characters (e.g. bidi overrides) removed.
+
+An unusable `--authorize-logo` (missing, oversized or unsupported file, or a non-`http(s)` URL such as `javascript:`) does not stop the proxy: it logs an error at startup and shows the default icon. An `http://` logo URL logs a warning, because browsers block it as mixed content on an `https` consent page.
 
 ```bash title="Example"
 --authorize-server-name "Trino (staging)" \
