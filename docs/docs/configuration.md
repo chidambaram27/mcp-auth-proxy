@@ -187,6 +187,12 @@ Access tokens are self-contained JWTs and are accepted until they expire, so `AC
 
 `MAX_SESSION_AGE` adds an absolute cap: it is counted from the user's login at the identity provider (the `auth_time` claim) and does not move on refresh. Tokens issued near the end of the session expire when the session ends, and once it has ended the token endpoint answers `invalid_grant`, so the MCP client has to send the user through the login (and the identity provider's group/user checks) again. With the default `0` there is no cap.
 
+Every token request (code exchange and refresh) re-checks the user against the current allowlist (`GOOGLE_ALLOWED_USERS` / `GOOGLE_ALLOWED_WORKSPACES`, `GITHUB_ALLOWED_USERS`, `OIDC_ALLOWED_USERS` / `_GLOB` / `_ATTRIBUTES` / `_ATTRIBUTES_GLOB`, the password, and which providers are configured) and answers `invalid_grant` if the user is no longer allowed. After you remove a user and restart the proxy, they keep access only until their current access token expires, so keep `ACCESS_TOKEN_LIFESPAN` short (e.g. `15m`). The check uses the values recorded at login and does not contact the identity provider:
+
+- Workspace (`hd`) and OIDC attribute values are recorded at login, so a change at the identity provider (for example a user removed from an OIDC group) is only noticed at the next login. Use `MAX_SESSION_AGE` to bound that, and to catch accounts that were suspended or deleted at the identity provider.
+- GitHub organization and team membership is not re-checked: while `GITHUB_ALLOWED_ORGS` is set, GitHub users stay allowed until their next login.
+- Sessions created before this check existed are re-checked against the stored userinfo, which only keeps the user ID field and the fields used in `HEADER_MAPPING`. Users allowed by a rule on another field (for example a Google workspace via `hd`, or an OIDC attribute) have their next refresh refused and sign in once more.
+
 Access tokens carry `iat` / `nbf` = the time they were issued (also for refreshed tokens), `exp` = `iat` + `ACCESS_TOKEN_LIFESPAN`, and `auth_time` = the login time.
 
 ```bash title="Example"

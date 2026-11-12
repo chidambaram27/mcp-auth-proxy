@@ -2,6 +2,7 @@ package idp
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/gin-contrib/sessions"
@@ -35,7 +37,43 @@ func setupTestServerWithBranding(t *testing.T, branding Branding) (*httptest.Ser
 	return setupTestServerWith(t, branding, DefaultTokenLifespans())
 }
 
+// testProvider is a login provider whose allowlist a test can change while
+// the server runs.
+type testProvider struct {
+	mu      sync.Mutex
+	removed map[string]bool
+}
+
+func (p *testProvider) remove(userID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.removed == nil {
+		p.removed = map[string]bool{}
+	}
+	p.removed[userID] = true
+}
+
+func (p *testProvider) Name() string                                         { return "Test" }
+func (p *testProvider) Type() string                                         { return "test" }
+func (p *testProvider) RedirectURL() string                                  { return "/.auth/test/callback" }
+func (p *testProvider) AuthURL() string                                      { return "/.auth/test" }
+func (p *testProvider) AuthCodeURL(string) (string, error)                   { return "", nil }
+func (p *testProvider) Exchange(*gin.Context, string) (*oauth2.Token, error) { return nil, nil }
+func (p *testProvider) Authorization(context.Context, *oauth2.Token) (bool, string, map[string]any, error) {
+	return false, "", nil, nil
+}
+func (p *testProvider) AuthzFacts(map[string]any) map[string]any { return nil }
+func (p *testProvider) Reauthorize(userID string, _ map[string]any) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return !p.removed[userID]
+}
+
 func setupTestServerWith(t *testing.T, branding Branding, lifespans TokenLifespans) (*httptest.Server, repository.Repository, string) {
+	return setupTestServerWithProvider(t, branding, lifespans, &testProvider{})
+}
+
+func setupTestServerWithProvider(t *testing.T, branding Branding, lifespans TokenLifespans, provider auth.Provider) (*httptest.Server, repository.Repository, string) {
 	// Create temp directory and repository
 	tmpDir, err := os.MkdirTemp("", "idp_test_*")
 	require.NoError(t, err)
@@ -66,6 +104,7 @@ func setupTestServerWith(t *testing.T, branding Branding, lifespans TokenLifespa
 		session.Set(auth.SessionKeyAuthorized, true)
 		session.Set(auth.SessionKeyUserID, "test-user@example.com")
 		session.Set(auth.SessionKeyUserInfo, `{"email":"test-user@example.com","name":"Test User"}`)
+		session.Set(auth.SessionKeyProvider, provider.Type())
 		err := session.Save()
 		if err != nil {
 			c.JSON(500, gin.H{"error": "Failed to save session"})
@@ -76,7 +115,7 @@ func setupTestServerWith(t *testing.T, branding Branding, lifespans TokenLifespa
 	})
 
 	// Create auth router and IDP router
-	authRouter, err := auth.NewAuthRouter([]string{}, false, nil)
+	authRouter, err := auth.NewAuthRouter([]string{}, false, nil, provider)
 	require.NoError(t, err)
 
 	logger, _ := zap.NewDevelopment()

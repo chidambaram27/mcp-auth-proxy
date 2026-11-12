@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"html/template"
+	"maps"
 	"math/big"
 	"net"
 	"net/http"
@@ -383,6 +384,7 @@ func (a *IDPRouter) handleAuthorizationReturn(c *gin.Context) {
 		return
 	}
 	jwtSession.AuthTime = sessionAuthTime(session, time.Now())
+	jwtSession.Provider, jwtSession.AuthzFacts = auth.SessionIdentity(session)
 
 	response, err := a.provider.NewAuthorizeResponse(ctx, ar, jwtSession)
 	if err != nil {
@@ -462,6 +464,14 @@ func (a *IDPRouter) handleToken(c *gin.Context) {
 	if err != nil {
 		a.logger.With(utils.Err(err)...).Error("Failed to create access request", zap.String("grant_type", c.PostForm("grant_type")))
 		a.provider.WriteAccessError(ctx, c.Writer, accessRequest, err)
+		return
+	}
+
+	if !a.stillAuthorized(accessRequest) {
+		a.logger.Info("Token request refused: user is no longer allowed by the current configuration",
+			zap.String("grant_type", c.PostForm("grant_type")), zap.String("subject", accessRequest.GetSession().GetSubject()))
+		a.provider.WriteAccessError(ctx, c.Writer, accessRequest, fosite.ErrInvalidGrant.
+			WithHint("The user is no longer authorized. The user must sign in again."))
 		return
 	}
 
@@ -736,6 +746,11 @@ type Session struct {
 	// AuthTime is when the user logged in at the upstream identity provider.
 	// It is carried unchanged through refreshes.
 	AuthTime time.Time `json:"auth_time"`
+	// Provider and AuthzFacts identify the login so it can be re-checked
+	// against the current allowlist on every token request. They are stored
+	// server-side only and never put in the issued tokens.
+	Provider   string         `json:"provider,omitempty"`
+	AuthzFacts map[string]any `json:"authz_facts,omitempty"`
 }
 
 func (s *Session) GetJWTClaims() jwt.JWTClaimsContainer {
@@ -769,7 +784,9 @@ func (s *Session) Clone() fosite.Session {
 		JWTHeader: &jwt.Headers{
 			Extra: make(map[string]any),
 		},
-		AuthTime: s.AuthTime,
+		AuthTime:   s.AuthTime,
+		Provider:   s.Provider,
+		AuthzFacts: maps.Clone(s.AuthzFacts),
 	}
 
 	for k, v := range s.JWTHeader.Extra {
