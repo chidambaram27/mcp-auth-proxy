@@ -41,6 +41,7 @@ type IDPRouter struct {
 	authRouter        *auth.AuthRouter
 	authorizeTemplate *template.Template
 	branding          Branding
+	lifespans         TokenLifespans
 }
 
 func NewIDPRouter(
@@ -93,6 +94,7 @@ func NewIDPRouter(
 		authRouter:        authRouter,
 		authorizeTemplate: authorizeTemplate,
 		branding:          branding,
+		lifespans:         lifespans,
 	}, nil
 }
 
@@ -380,6 +382,7 @@ func (a *IDPRouter) handleAuthorizationReturn(c *gin.Context) {
 		a.provider.WriteAuthorizeError(ctx, c.Writer, ar, err)
 		return
 	}
+	jwtSession.AuthTime = sessionAuthTime(session, time.Now())
 
 	response, err := a.provider.NewAuthorizeResponse(ctx, ar, jwtSession)
 	if err != nil {
@@ -458,6 +461,13 @@ func (a *IDPRouter) handleToken(c *gin.Context) {
 	accessRequest, err := a.provider.NewAccessRequest(ctx, c.Request, session)
 	if err != nil {
 		a.logger.With(utils.Err(err)...).Error("Failed to create access request", zap.String("grant_type", c.PostForm("grant_type")))
+		a.provider.WriteAccessError(ctx, c.Writer, accessRequest, err)
+		return
+	}
+
+	if err := applySessionPolicy(accessRequest, time.Now(), a.lifespans.AccessToken, a.lifespans.MaxSessionAge); err != nil {
+		a.logger.Info("Token request refused: session exceeded the maximum session age",
+			zap.String("grant_type", c.PostForm("grant_type")), zap.String("subject", accessRequest.GetSession().GetSubject()))
 		a.provider.WriteAccessError(ctx, c.Writer, accessRequest, err)
 		return
 	}
@@ -723,6 +733,9 @@ type Session struct {
 	*fosite.DefaultSession
 	JWTClaims *jwt.JWTClaims
 	JWTHeader *jwt.Headers
+	// AuthTime is when the user logged in at the upstream identity provider.
+	// It is carried unchanged through refreshes.
+	AuthTime time.Time `json:"auth_time"`
 }
 
 func (s *Session) GetJWTClaims() jwt.JWTClaimsContainer {
@@ -756,6 +769,7 @@ func (s *Session) Clone() fosite.Session {
 		JWTHeader: &jwt.Headers{
 			Extra: make(map[string]any),
 		},
+		AuthTime: s.AuthTime,
 	}
 
 	for k, v := range s.JWTHeader.Extra {

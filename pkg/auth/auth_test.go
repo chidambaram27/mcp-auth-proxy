@@ -6,8 +6,10 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-contrib/sessions"
+	"github.com/gin-contrib/sessions/cookie"
 	"github.com/gin-contrib/sessions/memstore"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -490,4 +492,43 @@ func TestRenderUnauthorizedBranding(t *testing.T) {
 		authRouter.renderUnauthorized(c, "<script>x</script>", "Keycloak")
 		require.NotContains(t, w.Body.String(), "<script>x</script>")
 	})
+}
+
+func TestLoginRecordsAuthTime(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockToken := &oauth2.Token{AccessToken: "test-token"}
+	mockProvider := NewMockProvider(ctrl)
+	mockProvider.EXPECT().Name().Return("test").AnyTimes()
+	mockProvider.EXPECT().AuthURL().Return("/.auth/test").AnyTimes()
+	mockProvider.EXPECT().RedirectURL().Return("/.auth/test/callback").AnyTimes()
+	mockProvider.EXPECT().AuthCodeURL(gomock.Any()).Return("https://example.com/oauth", nil)
+	mockProvider.EXPECT().Exchange(gomock.Any(), gomock.Any()).Return(mockToken, nil)
+	mockProvider.EXPECT().Authorization(gomock.Any(), mockToken).Return(true, "user@example.com", nil, nil)
+
+	authRouter, err := NewAuthRouter(nil, false, nil, mockProvider)
+	require.NoError(t, err)
+
+	var authTime any
+	router := gin.New()
+	router.Use(sessions.Sessions("session", cookie.NewStore([]byte("test-secret-test-secret-test-sec"))))
+	authRouter.SetupRoutes(router)
+	router.GET("/check-session", func(c *gin.Context) {
+		authTime = sessions.Default(c).Get(SessionKeyAuthTime)
+		c.String(http.StatusOK, "ok")
+	})
+	server := httptest.NewServer(router)
+	defer server.Close()
+	client := setupClient()
+
+	before := time.Now().Unix()
+	for _, p := range []string{"/.auth/test", "/.auth/test/callback", "/check-session"} {
+		resp, err := client.Get(server.URL + p)
+		require.NoError(t, err)
+		resp.Body.Close()
+	}
+	require.IsType(t, int64(0), authTime)
+	require.GreaterOrEqual(t, authTime.(int64), before)
+	require.LessOrEqual(t, authTime.(int64), time.Now().Unix())
 }
