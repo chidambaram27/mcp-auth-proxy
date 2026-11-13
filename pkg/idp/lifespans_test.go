@@ -15,32 +15,36 @@ import (
 )
 
 func TestParseTokenLifespans(t *testing.T) {
-	l, err := ParseTokenLifespans("2m", "5m", "30s", "0", "0s")
+	l, err := ParseTokenLifespans("2m", "5m", "30s", "0", "0s", "0s")
 	require.NoError(t, err)
 	require.Equal(t, TokenLifespans{AccessToken: 2 * time.Minute, RefreshToken: 5 * time.Minute, AuthorizeCode: 30 * time.Second}, l)
 
-	l, err = ParseTokenLifespans("2m", "5m", "30s", "168h", "10s")
+	l, err = ParseTokenLifespans("2m", "5m", "30s", "168h", "10s", "5m")
 	require.NoError(t, err)
 	require.Equal(t, 168*time.Hour, l.MaxSessionAge)
 	require.Equal(t, 10*time.Second, l.RefreshTokenGracePeriod)
 
-	for _, tc := range [][5]string{
-		{"", "5m", "30s", "0", "0s"},
-		{"2m", "abc", "30s", "0", "0s"},
-		{"2m", "5m", "0", "0", "0s"},
-		{"-1h", "5m", "30s", "0", "0s"},
-		{"2m", "5m", "30s", "", "0s"},
-		{"2m", "5m", "30s", "-1h", "0s"},
-		{"2m", "5m", "30s", "0", "-1s"},
-		{"2m", "5m", "30s", "0", "x"},
+	require.Equal(t, 5*time.Minute, l.UpstreamRecheckInterval)
+
+	for _, tc := range [][6]string{
+		{"", "5m", "30s", "0", "0s", "0s"},
+		{"2m", "abc", "30s", "0", "0s", "0s"},
+		{"2m", "5m", "0", "0", "0s", "0s"},
+		{"-1h", "5m", "30s", "0", "0s", "0s"},
+		{"2m", "5m", "30s", "", "0s", "0s"},
+		{"2m", "5m", "30s", "-1h", "0s", "0s"},
+		{"2m", "5m", "30s", "0", "-1s", "0s"},
+		{"2m", "5m", "30s", "0", "x", "0s"},
+		{"2m", "5m", "30s", "0", "0s", "-1m"},
+		{"2m", "5m", "30s", "0", "0s", ""},
 	} {
-		_, err := ParseTokenLifespans(tc[0], tc[1], tc[2], tc[3], tc[4])
+		_, err := ParseTokenLifespans(tc[0], tc[1], tc[2], tc[3], tc[4], tc[5])
 		require.Error(t, err, "%v", tc)
 	}
 }
 
-func TestDefaultTokenLifespansMatchUpstream(t *testing.T) {
-	require.Equal(t, TokenLifespans{AccessToken: 24 * time.Hour, RefreshToken: 30 * 24 * time.Hour, AuthorizeCode: 15 * time.Minute}, DefaultTokenLifespans())
+func TestDefaultTokenLifespans(t *testing.T) {
+	require.Equal(t, TokenLifespans{AccessToken: time.Hour, RefreshToken: 30 * 24 * time.Hour, AuthorizeCode: 15 * time.Minute}, DefaultTokenLifespans())
 	require.NoError(t, DefaultTokenLifespans().Validate())
 }
 
@@ -69,6 +73,7 @@ func issueTestTokens(t *testing.T, provider auth.Provider, lifespans TokenLifesp
 	callbackURL := testAuthFlowWithURL(t, server.URL, config.AuthCodeURL("test-state"))
 	beforeExchange()
 	resp, err := http.PostForm(server.URL+TokenEndpoint, url.Values{
+		"code_verifier": {testCodeVerifier},
 		"grant_type":    {"authorization_code"},
 		"code":          {callbackURL.Query().Get("code")},
 		"redirect_uri":  {"http://localhost:8080/callback"},

@@ -44,6 +44,10 @@ Complete reference for all MCP Auth Proxy configuration options.
 | `--google-allowed-users`      | `GOOGLE_ALLOWED_USERS`      | -       | Comma-separated list of allowed Google users (emails) |
 | `--google-allowed-workspaces` | `GOOGLE_ALLOWED_WORKSPACES` | -       | Comma-separated list of allowed Google workspaces     |
 
+At least one of `GOOGLE_ALLOWED_USERS` / `GOOGLE_ALLOWED_WORKSPACES` is required; the proxy refuses to start otherwise (any Google account could sign in). The same applies to GitHub (`GITHUB_ALLOWED_USERS` / `GITHUB_ALLOWED_ORGS`) and OIDC (any of the `OIDC_ALLOWED_*` options). Only verified email addresses (`email_verified`) are accepted, and emails and workspaces are compared case-insensitively.
+
+Google sign-in requests offline access (`access_type=offline`, `prompt=consent`, so Google shows its consent screen at each sign-in) and the proxy stores the Google refresh token encrypted with the session. On every token refresh by an MCP client (at most once per `UPSTREAM_RECHECK_INTERVAL`) the proxy redeems it at Google and re-reads the userinfo: a user who was deleted or suspended in Google Workspace, revoked the app's access, left the allowed workspace, or changed email gets `invalid_grant` and all tokens of that authorization are revoked. See [Token Lifespan Options](#token-lifespan-options).
+
 #### GitHub OAuth
 
 | Option                   | Environment Variable   | Default | Description                                                                                                                      |
@@ -135,8 +139,10 @@ For Okta, you typically need to:
 
 ### Cryptographic Key Options
 
-- **`AUTH_HMAC_SECRET`** — Base64-encoded 32-byte secret for HMAC/cookie signing. Default: auto-generated.
+- **`AUTH_HMAC_SECRET`** — Base64-encoded 32-byte master secret. Default: auto-generated. Separate keys are derived from it (HKDF-SHA256) for signing and encrypting the browser session cookie and for encrypting the stored upstream (Google) refresh tokens; the secret itself is used for the authorization server's opaque refresh tokens and codes.
 - **`JWT_PRIVATE_KEY`** — PEM-encoded RSA private key (PKCS8) for JWT signing. Default: auto-generated.
+
+Set both from a secret manager in production; with more than one replica they must be identical on all of them. The proxy logs a warning at startup when either is not set.
 
 When set, these environment variables take precedence over the file-based keys in `{data-path}/secret` and `{data-path}/private_key.pem`. This is useful for deployments without persistent volumes (e.g., Kubernetes) where pod restarts would otherwise regenerate keys and invalidate all existing OAuth tokens.
 
@@ -176,13 +182,16 @@ An unusable `--authorize-logo` (missing, oversized or unsupported file, or a non
 
 Lifetimes of the tokens issued by the built-in authorization server to MCP clients. Values are Go durations (`90s`, `15m`, `1h`, `720h`; no `d` unit) and must be positive (`MAX_SESSION_AGE` may be `0`).
 
-| Option                         | Environment Variable         | Default          | Description                                                |
-| ------------------------------ | ---------------------------- | ---------------- | ---------------------------------------------------------- |
-| `--access-token-lifespan`      | `ACCESS_TOKEN_LIFESPAN`      | `24h`            | Lifetime of access tokens (JWT `exp`, `expires_in`)        |
-| `--refresh-token-lifespan`     | `REFRESH_TOKEN_LIFESPAN`     | `720h` (30 days) | Lifetime of refresh tokens                                 |
-| `--authorize-code-lifespan`    | `AUTHORIZE_CODE_LIFESPAN`    | `15m`            | Lifetime of authorization codes (consent → token exchange) |
-| `--max-session-age`            | `MAX_SESSION_AGE`            | `0` (off)        | Maximum session length from the user's login, see below    |
-| `--refresh-token-grace-period` | `REFRESH_TOKEN_GRACE_PERIOD` | `0s`             | How long a used refresh token is still accepted, see below |
+| Option                         | Environment Variable         | Default          | Description                                                                              |
+| ------------------------------ | ---------------------------- | ---------------- | ---------------------------------------------------------------------------------------- |
+| `--access-token-lifespan`      | `ACCESS_TOKEN_LIFESPAN`      | `1h`             | Lifetime of access tokens (JWT `exp`, `expires_in`)                                      |
+| `--refresh-token-lifespan`     | `REFRESH_TOKEN_LIFESPAN`     | `720h` (30 days) | Lifetime of refresh tokens                                                               |
+| `--authorize-code-lifespan`    | `AUTHORIZE_CODE_LIFESPAN`    | `15m`            | Lifetime of authorization codes (consent → token exchange)                               |
+| `--max-session-age`            | `MAX_SESSION_AGE`            | `0` (off)        | Maximum session length from the user's login, see below                                  |
+| `--refresh-token-grace-period` | `REFRESH_TOKEN_GRACE_PERIOD` | `0s`             | How long a used refresh token is still accepted, see below                               |
+| `--upstream-recheck-interval`  | `UPSTREAM_RECHECK_INTERVAL`  | `0s`             | Minimum time between upstream (Google) re-verifications on refresh; `0s` = every refresh |
+
+**Removing users.** With Google, users never have to sign in again while they keep using their MCP client and are still allowed: clients refresh their tokens in the background. A user removed from the company (deleted or suspended in Google Workspace) loses access at the next refresh, i.e. within `ACCESS_TOKEN_LIFESPAN` (plus `UPSTREAM_RECHECK_INTERVAL` if set): the proxy re-verifies the user with Google on refresh and revokes the whole grant when Google refuses. If Google cannot be reached, the refresh fails with `503 temporarily_unavailable` and the refresh token stays valid, so the client can retry; no new token is issued until Google confirms the user. Google keeps at most 100 refresh tokens per user and OAuth client, so after many sign-ins the oldest sessions are refused and those users sign in once more.
 
 Access tokens are self-contained JWTs and are accepted until they expire, so `ACCESS_TOKEN_LIFESPAN` bounds how long a user keeps access after being removed at the identity provider. Every refresh issues a new refresh token with a fresh `REFRESH_TOKEN_LIFESPAN`, so the refresh token lifespan limits idle time, not the total session length.
 
@@ -190,7 +199,7 @@ Access tokens are self-contained JWTs and are accepted until they expire, so `AC
 
 Every token request (code exchange and refresh) re-checks the user against the current allowlist (`GOOGLE_ALLOWED_USERS` / `GOOGLE_ALLOWED_WORKSPACES`, `GITHUB_ALLOWED_USERS`, `OIDC_ALLOWED_USERS` / `_GLOB` / `_ATTRIBUTES` / `_ATTRIBUTES_GLOB`, the password, and which providers are configured) and answers `invalid_grant` if the user is no longer allowed. After you remove a user and restart the proxy, they keep access only until their current access token expires, so keep `ACCESS_TOKEN_LIFESPAN` short (e.g. `15m`). The check uses the values recorded at login and does not contact the identity provider:
 
-- Workspace (`hd`) and OIDC attribute values are recorded at login, so a change at the identity provider (for example a user removed from an OIDC group) is only noticed at the next login. Use `MAX_SESSION_AGE` to bound that, and to catch accounts that were suspended or deleted at the identity provider.
+- For Google, the user is additionally re-verified with Google on refresh (see "Removing users" above). For OIDC, attribute values are recorded at login, so a change at the identity provider (for example a user removed from an OIDC group) is only noticed at the next login. Use `MAX_SESSION_AGE` to bound that, and to catch accounts that were suspended or deleted at the identity provider.
 - GitHub organization and team membership is not re-checked: while `GITHUB_ALLOWED_ORGS` is set, GitHub users stay allowed until their next login.
 - Sessions created before this check existed are re-checked against the stored userinfo, which only keeps the user ID field and the fields used in `HEADER_MAPPING`. Users allowed by a rule on another field (for example a Google workspace via `hd`, or an OIDC attribute) have their next refresh refused and sign in once more.
 
@@ -205,6 +214,22 @@ Access tokens carry `iat` / `nbf` = the time they were issued (also for refreshe
 --max-session-age 168h
 ```
 
+### Client Registration Options
+
+MCP clients register themselves (OAuth dynamic client registration). Because anyone can register a client, the redirect URIs a client may use are restricted; otherwise an attacker could register `https://attacker.example/callback` and trick a user into approving a grant that sends the authorization code to the attacker.
+
+| Option                    | Environment Variable    | Default | Description                                                                                            |
+| ------------------------- | ----------------------- | ------- | ------------------------------------------------------------------------------------------------------ |
+| `--allowed-redirect-uris` | `ALLOWED_REDIRECT_URIS` | -       | Comma-separated glob patterns of additional allowed redirect URIs (e.g. hosted MCP clients' callbacks) |
+
+Always allowed: loopback URIs (`http://localhost:*`, `http://127.0.0.1:*`, `http://[::1]:*`) and private-use (app) schemes such as `cursor://` or `vscode://`, which only reach an application on the user's own machine. Schemes browsers treat specially (`javascript:`, `data:`, `file:`, ...) are always refused. Any other URI, in practice `https://` callbacks of web-based MCP clients, must match a pattern: `*` matches within one path segment and never crosses `/`, `**` matches anything. Clients registered before a URI was disallowed are refused at authorization (without redirecting).
+
+Registration also only accepts `authorization_code`/`refresh_token` grants, the `code` response type and the `none`, `client_secret_basic` and `client_secret_post` authentication methods, and at most 10 redirect URIs. All clients must use PKCE with `S256`.
+
+```bash title="Example"
+--allowed-redirect-uris "https://claude.ai/api/mcp/auth_callback,https://chat.example.com/api/mcp/**"
+```
+
 ### Server Options
 
 | Option         | Environment Variable | Default  | Description                  |
@@ -212,6 +237,23 @@ Access tokens carry `iat` / `nbf` = the time they were issued (also for refreshe
 | `--listen`     | `LISTEN`             | `:80`    | Address to listen on         |
 | `--tls-listen` | `TLS_LISTEN`         | `:443`   | Address to listen on for TLS |
 | `--data-path`  | `DATA_PATH`          | `./data` | Path to the data directory   |
+
+The container images run as a non-root user and set `LISTEN=:8080` and `TLS_LISTEN=:8443` (non-root processes cannot bind ports below 1024 on Kubernetes). `ghcr.io/...:<tag>` includes Python and Node.js for stdio MCP servers; `ghcr.io/...:<tag>-minimal` is a distroless image for HTTP backends. The data directory is created with mode `0700`; when mounting a volume, make it writable for the image's user (uid `10001`, or `65532` for `-minimal`, e.g. Kubernetes `fsGroup`).
+
+The server applies, independent of configuration: header read timeout (10s), idle timeout (120s), 64 KiB header and 10 MiB request body limits, per-IP rate limits on `/.idp/register`, `/.idp/auth`, `/.idp/token`, the password login and the login callbacks (behind a load balancer set `TRUSTED_PROXIES` so the client IP is used; limits are kept in memory per replica, so with N replicas a client gets up to N times the limit), HSTS on `https`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`. Access logs do not include query strings. Expired codes, tokens and abandoned authorization requests are purged hourly.
+
+On `SIGTERM` the proxy stops accepting connections and lets in-flight requests finish (up to 5 seconds). On Kubernetes, add a short `preStop` delay so the pod is removed from the Service before it stops; the `-minimal` image has no shell, so use the native sleep action (Kubernetes 1.30+):
+
+```yaml
+lifecycle:
+  preStop:
+    sleep:
+      seconds: 5
+```
+
+Restrict access to the MCP backend with a `NetworkPolicy` that only admits the proxy pods, and check that the cluster's network plugin enforces it (some local clusters, e.g. minikube's default CNI, ignore network policies).
+
+The browser session cookie (`__Host-session` on `https`) is only used while signing in and approving a client. It is encrypted, `HttpOnly`, `SameSite=Lax`, expires after 10 minutes of inactivity and is never sent to the backend; a sign-in is reused for at most 1 hour. The consent form is protected with a CSRF token and an origin check.
 
 ### Repository Options
 
@@ -235,14 +277,16 @@ Access tokens carry `iat` / `nbf` = the time they were issued (also for refreshe
 
 ### Proxy Options
 
-| Option                          | Environment Variable          | Default     | Description                                                                                           |
-| ------------------------------- | ----------------------------- | ----------- | ----------------------------------------------------------------------------------------------------- |
-| `--proxy-bearer-token`          | `PROXY_BEARER_TOKEN`          | -           | Bearer token to add to Authorization header when proxying requests                                    |
-| `--proxy-forward-authorization` | `PROXY_FORWARD_AUTHORIZATION` | `false`     | Forward the incoming Authorization bearer token to the backend after validation                       |
-| `--proxy-headers`               | `PROXY_HEADERS`               | -           | Comma-separated list of headers to add when proxying requests (format: Header1:Value1,Header2:Value2) |
-| `--header-mapping`              | `HEADER_MAPPING`              | -           | Comma-separated mapping of JSON pointer paths to header names (e.g., `/email:X-Forwarded-Email`)      |
-| `--header-mapping-base`         | `HEADER_MAPPING_BASE`         | `/userinfo` | JSON pointer base path for header mapping claims lookup (e.g., `/userinfo` or `/`)                    |
-| `--http-streaming-only`         | `HTTP_STREAMING_ONLY`         | `false`     | Reject SSE (GET) requests and keep the backend operating in HTTP streaming-only mode                  |
-| `--trusted-proxies`             | `TRUSTED_PROXIES`             | -           | Comma-separated list of trusted proxies (IP addresses or CIDR ranges)                                 |
+| Option                          | Environment Variable          | Default     | Description                                                                                                                                             |
+| ------------------------------- | ----------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--proxy-bearer-token`          | `PROXY_BEARER_TOKEN`          | -           | Bearer token to add to Authorization header when proxying requests                                                                                      |
+| `--proxy-forward-authorization` | `PROXY_FORWARD_AUTHORIZATION` | `false`     | Forward the incoming Authorization bearer token to the backend after validation                                                                         |
+| `--proxy-headers`               | `PROXY_HEADERS`               | -           | Comma-separated list of headers to set when proxying requests (format: Header1:Value1,Header2:Value2); client-sent values of these headers are replaced |
+| `--header-mapping`              | `HEADER_MAPPING`              | -           | Comma-separated mapping of JSON pointer paths to header names (e.g., `/email:X-Forwarded-Email`)                                                        |
+| `--header-mapping-base`         | `HEADER_MAPPING_BASE`         | `/userinfo` | JSON pointer base path for header mapping claims lookup (e.g., `/userinfo` or `/`)                                                                      |
+| `--http-streaming-only`         | `HTTP_STREAMING_ONLY`         | `false`     | Reject SSE (GET) requests and keep the backend operating in HTTP streaming-only mode                                                                    |
+| `--trusted-proxies`             | `TRUSTED_PROXIES`             | -           | Comma-separated list of trusted proxies (IP addresses or CIDR ranges)                                                                                   |
+
+The proxy removes client-sent headers named in `HEADER_MAPPING` and `PROXY_HEADERS`, and applies the client's `Connection` header before adding them, so a client can neither spoof nor strip the identity headers the backend receives. The backend should still reject requests without them and must only be reachable through the proxy.
 
 For practical configuration examples including environment variables, Docker Compose, and Kubernetes deployments, see the [Configuration Examples](./examples.md) page.

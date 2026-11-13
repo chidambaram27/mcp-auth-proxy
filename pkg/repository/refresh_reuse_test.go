@@ -3,13 +3,18 @@ package repository
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/ory/fosite"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 )
 
 func eachRepo(t *testing.T, fn func(t *testing.T, repo Repository)) {
@@ -25,6 +30,29 @@ func eachRepo(t *testing.T, fn func(t *testing.T, repo Repository)) {
 			require.NoError(t, err)
 			return repo
 		},
+	}
+	// Set TEST_POSTGRES_DSN (e.g. postgres://postgres:test@localhost:5432/postgres?sslmode=disable)
+	// to also run against PostgreSQL, each test in its own schema.
+	if dsn := os.Getenv("TEST_POSTGRES_DSN"); dsn != "" {
+		backends["postgres"] = func(t *testing.T) Repository {
+			admin, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+			require.NoError(t, err)
+			schema := fmt.Sprintf("test_%d", time.Now().UnixNano())
+			require.NoError(t, admin.Exec("CREATE SCHEMA "+schema).Error)
+			t.Cleanup(func() {
+				admin.Exec("DROP SCHEMA " + schema + " CASCADE")
+				if db, err := admin.DB(); err == nil {
+					db.Close()
+				}
+			})
+			sep := "?"
+			if strings.Contains(dsn, "?") {
+				sep = "&"
+			}
+			repo, err := NewSQLRepository("postgres", dsn+sep+"search_path="+schema)
+			require.NoError(t, err)
+			return repo
+		}
 	}
 	for name, open := range backends {
 		t.Run(name, func(t *testing.T) {

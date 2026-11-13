@@ -448,6 +448,7 @@ func TestNewRootCommand_HTTPStreamingOnlyFlag(t *testing.T) {
 		authorizeBanner string,
 		authorizeFooter string,
 		tokenLifespans idp.TokenLifespans,
+		allowedRedirectURIs []string,
 	) error {
 		streamingOnly = httpStreamingOnly
 		receivedTargets = proxyTarget
@@ -521,6 +522,7 @@ func TestNewRootCommand_HTTPStreamingOnlyFromEnv(t *testing.T) {
 		authorizeBanner string,
 		authorizeFooter string,
 		tokenLifespans idp.TokenLifespans,
+		allowedRedirectURIs []string,
 	) error {
 		streamingOnly = httpStreamingOnly
 		return nil
@@ -590,6 +592,7 @@ func TestNewRootCommand_ForwardAuthorizationFlag(t *testing.T) {
 		authorizeBanner string,
 		authorizeFooter string,
 		tokenLifespans idp.TokenLifespans,
+		allowedRedirectURIs []string,
 	) error {
 		forwardAuthorization = forwardAuthorizationHeader
 		return nil
@@ -659,6 +662,7 @@ func TestNewRootCommand_ForwardAuthorizationFromEnv(t *testing.T) {
 		authorizeBanner string,
 		authorizeFooter string,
 		tokenLifespans idp.TokenLifespans,
+		allowedRedirectURIs []string,
 	) error {
 		forwardAuthorization = forwardAuthorizationHeader
 		return nil
@@ -687,7 +691,7 @@ func runWithLifespans(t *testing.T, args []string) (idp.TokenLifespans, error) {
 		oidcAllowedAttributes, oidcAllowedAttributesGlob map[string][]string, noProviderAutoSelect bool, password, passwordHash string,
 		trustedProxy, proxyHeaders []string, proxyBearerToken string, forwardAuthorizationHeader bool, proxyTarget []string,
 		httpStreamingOnly bool, headerMapping map[string]string, headerMappingBase, authorizeServerName, authorizeLogo,
-		authorizeBanner, authorizeFooter string, tokenLifespans idp.TokenLifespans,
+		authorizeBanner, authorizeFooter string, tokenLifespans idp.TokenLifespans, allowedRedirectURIs []string,
 	) error {
 		got = tokenLifespans
 		return nil
@@ -700,17 +704,18 @@ func runWithLifespans(t *testing.T, args []string) (idp.TokenLifespans, error) {
 }
 
 func TestNewRootCommand_TokenLifespans(t *testing.T) {
-	t.Run("defaults match upstream", func(t *testing.T) {
+	t.Run("defaults", func(t *testing.T) {
 		t.Setenv("ACCESS_TOKEN_LIFESPAN", "")
 		t.Setenv("REFRESH_TOKEN_LIFESPAN", "")
 		t.Setenv("AUTHORIZE_CODE_LIFESPAN", "")
 		t.Setenv("MAX_SESSION_AGE", "")
 		t.Setenv("REFRESH_TOKEN_GRACE_PERIOD", "")
+		t.Setenv("UPSTREAM_RECHECK_INTERVAL", "")
 		got, err := runWithLifespans(t, []string{"http://backend"})
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := idp.TokenLifespans{AccessToken: 24 * time.Hour, RefreshToken: 720 * time.Hour, AuthorizeCode: 15 * time.Minute}
+		want := idp.TokenLifespans{AccessToken: time.Hour, RefreshToken: 720 * time.Hour, AuthorizeCode: 15 * time.Minute}
 		if got != want {
 			t.Fatalf("got %+v, want %+v", got, want)
 		}
@@ -722,11 +727,12 @@ func TestNewRootCommand_TokenLifespans(t *testing.T) {
 		t.Setenv("AUTHORIZE_CODE_LIFESPAN", "30s")
 		t.Setenv("MAX_SESSION_AGE", "10m")
 		t.Setenv("REFRESH_TOKEN_GRACE_PERIOD", "30s")
+		t.Setenv("UPSTREAM_RECHECK_INTERVAL", "5m")
 		got, err := runWithLifespans(t, []string{"http://backend"})
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := idp.TokenLifespans{AccessToken: 2 * time.Minute, RefreshToken: 5 * time.Minute, AuthorizeCode: 30 * time.Second, MaxSessionAge: 10 * time.Minute, RefreshTokenGracePeriod: 30 * time.Second}
+		want := idp.TokenLifespans{AccessToken: 2 * time.Minute, RefreshToken: 5 * time.Minute, AuthorizeCode: 30 * time.Second, MaxSessionAge: 10 * time.Minute, RefreshTokenGracePeriod: 30 * time.Second, UpstreamRecheckInterval: 5 * time.Minute}
 		if got != want {
 			t.Fatalf("got %+v, want %+v", got, want)
 		}
@@ -750,6 +756,7 @@ func TestNewRootCommand_TokenLifespans(t *testing.T) {
 		{"--max-session-age", "-1h"},
 		{"--max-session-age", "7d"},
 		{"--refresh-token-grace-period", "-1s"},
+		{"--upstream-recheck-interval", "-1s"},
 	} {
 		t.Run("rejects "+bad[0]+"="+bad[1], func(t *testing.T) {
 			if _, err := runWithLifespans(t, append(bad, "http://backend")); err == nil {

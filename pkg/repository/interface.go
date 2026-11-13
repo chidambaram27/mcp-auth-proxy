@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/ory/fosite"
 	"github.com/ory/fosite/handler/oauth2"
@@ -17,7 +18,30 @@ type Repository interface {
 	pkce.PKCERequestStorage
 	DynamicClientStorage
 	AuthorizeRequestStorage
+	// PurgeExpired deletes expired authorization codes, PKCE sessions, access
+	// and refresh tokens, and abandoned authorize requests. It returns the
+	// number of deleted records.
+	PurgeExpired(ctx context.Context, now time.Time) (int, error)
 	Close() error
+}
+
+// AuthorizeRequestTTL is how long a pending (not yet approved or denied)
+// authorize request is kept.
+const AuthorizeRequestTTL = time.Hour
+
+// sessionExpiry returns the expiry recorded in stored session data for the
+// token type ("access_token", "refresh_token", "authorize_code"), or zero.
+func sessionExpiry(sessionData json.RawMessage, tokenType fosite.TokenType) time.Time {
+	if len(sessionData) == 0 {
+		return time.Time{}
+	}
+	var s struct {
+		ExpiresAt map[fosite.TokenType]time.Time `json:"expires_at"`
+	}
+	if json.Unmarshal(sessionData, &s) != nil {
+		return time.Time{}
+	}
+	return s.ExpiresAt[tokenType]
 }
 
 type DynamicClientStorage interface {

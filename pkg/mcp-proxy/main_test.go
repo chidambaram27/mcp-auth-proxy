@@ -52,6 +52,7 @@ func TestRun_NormalizesExternalURLTrailingSlash(t *testing.T) {
 				[]string{"http://example.com"}, false, nil, "/userinfo",
 				"", "", "", "",
 				idp.DefaultTokenLifespans(),
+				nil,
 			)
 
 			if tt.wantErr {
@@ -128,6 +129,7 @@ func TestRun_PassesHTTPStreamingOnlyToProxyRouter(t *testing.T) {
 		"",
 		"",
 		idp.DefaultTokenLifespans(),
+		nil,
 	)
 
 	require.Error(t, err)

@@ -23,8 +23,18 @@ func setupGoogleTest(allowedUsers, allowedWorkspaces []string) (Provider, gin.IR
 
 	goog := gin.New()
 	goog.POST("/token", func(c *gin.Context) {
+		switch c.PostForm("refresh_token") {
+		case "revoked-refresh-token":
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_grant", "error_description": "Token has been expired or revoked."})
+			return
+		case "outage-refresh-token":
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "backendError"})
+			return
+		}
 		c.JSON(http.StatusOK, gin.H{
-			"access_token": "test-access-token",
+			"access_token":  "test-access-token",
+			"refresh_token": "test-refresh-token",
+			"token_type":    "Bearer",
 		})
 	})
 	tsgoog := httptest.NewServer(goog)
@@ -58,6 +68,8 @@ func TestGoogleProvider(t *testing.T) {
 	require.Equal(t, authCodeURLObj.Query().Get("redirect_uri"), TestGoogleExternalURL+"/.auth/google/callback")
 	require.Equal(t, authCodeURLObj.Query().Get("response_type"), "code")
 	require.Equal(t, authCodeURLObj.Query().Get("state"), "test-state")
+	require.Equal(t, "offline", authCodeURLObj.Query().Get("access_type"))
+	require.Equal(t, "consent", authCodeURLObj.Query().Get("prompt"))
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -94,56 +106,77 @@ func TestGoogleProviderAuthorization(t *testing.T) {
 			name:              "allow all users",
 			allowedUsers:      []string{},
 			allowedWorkspaces: []string{},
-			userResp:          `{"sub": "12345", "name": "Test User", "email": "user1@gmail.com"}`,
+			userResp:          `{"email_verified": true, "sub": "12345", "name": "Test User", "email": "user1@gmail.com"}`,
 			expect:            true,
 		},
 		{
 			name:              "allow single user",
 			allowedUsers:      []string{"user1@gmail.com", "user2@gmail.com"},
 			allowedWorkspaces: []string{},
-			userResp:          `{"sub": "12345", "name": "Test User", "email": "user1@gmail.com"}`,
+			userResp:          `{"email_verified": true, "sub": "12345", "name": "Test User", "email": "user1@gmail.com"}`,
 			expect:            true,
 		},
 		{
 			name:              "deny single user",
 			allowedUsers:      []string{"user1@gmail.com"},
 			allowedWorkspaces: []string{},
-			userResp:          `{"sub": "12345", "name": "Test User", "email": "user2@gmail.com"}`,
+			userResp:          `{"email_verified": true, "sub": "12345", "name": "Test User", "email": "user2@gmail.com"}`,
 			expect:            false,
 		},
 		{
 			name:              "allow by workspace",
 			allowedUsers:      []string{},
 			allowedWorkspaces: []string{"example.com"},
-			userResp:          `{"sub": "12345", "name": "Test User", "email": "user1@example.com", "hd": "example.com"}`,
+			userResp:          `{"email_verified": true, "sub": "12345", "name": "Test User", "email": "user1@example.com", "hd": "example.com"}`,
 			expect:            true,
 		},
 		{
 			name:              "deny by workspace",
 			allowedUsers:      []string{},
 			allowedWorkspaces: []string{"example.com"},
-			userResp:          `{"sub": "12345", "name": "Test User", "email": "user1@gmail.com"}`,
+			userResp:          `{"email_verified": true, "sub": "12345", "name": "Test User", "email": "user1@gmail.com"}`,
 			expect:            false,
 		},
 		{
 			name:              "deny by other workspace",
 			allowedUsers:      []string{},
 			allowedWorkspaces: []string{"example.com"},
-			userResp:          `{"sub": "12345", "name": "Test User", "email": "test@other.com", "hd": "other.com"}`,
+			userResp:          `{"email_verified": true, "sub": "12345", "name": "Test User", "email": "test@other.com", "hd": "other.com"}`,
 			expect:            false,
 		},
 		{
 			name:              "allow user without workspace domain",
 			allowedUsers:      []string{},
 			allowedWorkspaces: []string{},
-			userResp:          `{"sub": "12345", "name": "Test User", "email": "test@gmail.com"}`,
+			userResp:          `{"email_verified": true, "sub": "12345", "name": "Test User", "email": "test@gmail.com"}`,
+			expect:            true,
+		},
+		{
+			name:              "deny unverified email",
+			allowedUsers:      []string{"user1@gmail.com"},
+			allowedWorkspaces: []string{},
+			userResp:          `{"email_verified": false, "sub": "12345", "email": "user1@gmail.com"}`,
+			expect:            false,
+		},
+		{
+			name:              "deny missing email_verified",
+			allowedUsers:      []string{},
+			allowedWorkspaces: []string{"example.com"},
+			userResp:          `{"sub": "12345", "email": "user1@example.com", "hd": "example.com"}`,
+			expect:            false,
+		},
+		{
+			name:              "allow user case-insensitively",
+			allowedUsers:      []string{"User1@Gmail.com"},
+			allowedWorkspaces: []string{},
+			userResp:          `{"email_verified": true, "sub": "12345", "email": "user1@GMAIL.com"}`,
 			expect:            true,
 		},
 		{
 			name:              "allow specific user with workspace",
 			allowedUsers:      []string{"test@example.com"},
 			allowedWorkspaces: []string{"other.com"},
-			userResp:          `{"sub": "12345", "name": "Test User", "email": "test@example.com", "hd": "example.com"}`,
+			userResp:          `{"email_verified": true, "sub": "12345", "name": "Test User", "email": "test@example.com", "hd": "example.com"}`,
 			expect:            true,
 		},
 	}
@@ -188,4 +221,39 @@ func TestGoogleProviderAuthorizationInvalidJSON(t *testing.T) {
 	require.Error(t, err)
 	require.False(t, ok)
 	require.Empty(t, user)
+}
+
+func TestGoogleVerifyUpstream(t *testing.T) {
+	ctx := context.Background()
+	p, googapi := setupGoogleTest(nil, []string{"example.com"})
+	hd := "example.com"
+	googapi.GET("/userinfo", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"email": "alice@example.com", "email_verified": true, "hd": hd})
+	})
+	v := p.(UpstreamVerifier)
+
+	res, err := v.VerifyUpstream(ctx, "alice@example.com", "good-refresh-token")
+	require.NoError(t, err)
+	require.True(t, res.Allowed)
+	require.Equal(t, "test-refresh-token", res.RefreshToken, "rotated token is returned")
+
+	// Account deleted/suspended or grant revoked at Google.
+	res, err = v.VerifyUpstream(ctx, "alice@example.com", "revoked-refresh-token")
+	require.NoError(t, err)
+	require.False(t, res.Allowed)
+
+	// Google outage is transient, not a refusal.
+	_, err = v.VerifyUpstream(ctx, "alice@example.com", "outage-refresh-token")
+	require.Error(t, err)
+
+	// Email changed.
+	res, err = v.VerifyUpstream(ctx, "bob@example.com", "good-refresh-token")
+	require.NoError(t, err)
+	require.False(t, res.Allowed)
+
+	// Moved out of the workspace.
+	hd = "other.com"
+	res, err = v.VerifyUpstream(ctx, "alice@example.com", "good-refresh-token")
+	require.NoError(t, err)
+	require.False(t, res.Allowed)
 }

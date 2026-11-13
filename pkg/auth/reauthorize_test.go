@@ -136,7 +136,7 @@ func TestGoogleLoginRecordsWorkspaceDespiteUserInfoFilter(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	provider, googleAPI := setupGoogleTest(nil, []string{"corp.example.com"})
 	googleAPI.GET("/userinfo", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"email": "carol@corp.example.com", "hd": "corp.example.com"})
+		c.JSON(http.StatusOK, gin.H{"email": "carol@corp.example.com", "email_verified": true, "hd": "corp.example.com"})
 	})
 	authRouter, err := NewAuthRouter(nil, false, []string{"email"}, provider)
 	require.NoError(t, err)

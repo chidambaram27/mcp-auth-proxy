@@ -223,6 +223,7 @@
       </div>
 
       <form method="post" class="actions">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
         <button class="deny-button" type="submit" name="action" value="deny">
           Deny
         </button>

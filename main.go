@@ -173,6 +173,7 @@ type proxyRunnerFunc func(
 	authorizeBanner string,
 	authorizeFooter string,
 	tokenLifespans idp.TokenLifespans,
+	allowedRedirectURIs []string,
 ) error
 
 func main() {
@@ -235,6 +236,8 @@ func newRootCommand(run proxyRunnerFunc) *cobra.Command {
 	var authorizeCodeLifespan string
 	var maxSessionAge string
 	var refreshTokenGracePeriod string
+	var upstreamRecheckInterval string
+	var allowedRedirectURIs string
 
 	rootCmd := &cobra.Command{
 		Use: "mcp-warp",
@@ -266,7 +269,7 @@ func newRootCommand(run proxyRunnerFunc) *cobra.Command {
 
 			headerMappingMap := parseHeaderMapping(headerMapping)
 
-			tokenLifespans, err := idp.ParseTokenLifespans(accessTokenLifespan, refreshTokenLifespan, authorizeCodeLifespan, maxSessionAge, refreshTokenGracePeriod)
+			tokenLifespans, err := idp.ParseTokenLifespans(accessTokenLifespan, refreshTokenLifespan, authorizeCodeLifespan, maxSessionAge, refreshTokenGracePeriod, upstreamRecheckInterval)
 			if err != nil {
 				return err
 			}
@@ -320,6 +323,7 @@ func newRootCommand(run proxyRunnerFunc) *cobra.Command {
 				authorizeBanner,
 				authorizeFooter,
 				tokenLifespans,
+				splitCSV(allowedRedirectURIs),
 			); err != nil {
 				return err
 			}
@@ -392,6 +396,10 @@ func newRootCommand(run proxyRunnerFunc) *cobra.Command {
 	rootCmd.Flags().StringVar(&authorizeCodeLifespan, "authorize-code-lifespan", getEnvWithDefault("AUTHORIZE_CODE_LIFESPAN", idp.DefaultAuthorizeCodeLifespan.String()), "Lifetime of authorization codes (Go duration, e.g. 5m)")
 	rootCmd.Flags().StringVar(&maxSessionAge, "max-session-age", getEnvWithDefault("MAX_SESSION_AGE", "0"), "Maximum session length from the user's login (Go duration, e.g. 168h). After it, token refresh fails and the user must sign in again. 0 disables the cap")
 	rootCmd.Flags().StringVar(&refreshTokenGracePeriod, "refresh-token-grace-period", getEnvWithDefault("REFRESH_TOKEN_GRACE_PERIOD", "0s"), "How long an already used refresh token is still accepted (Go duration, e.g. 30s). After it, reusing the token revokes all tokens of that grant. 0s = single use")
+	rootCmd.Flags().StringVar(&upstreamRecheckInterval, "upstream-recheck-interval", getEnvWithDefault("UPSTREAM_RECHECK_INTERVAL", "0s"), "Minimum time between re-verifications of the user with the upstream identity provider (Google) on token refresh (Go duration). Users deleted, suspended or removed upstream are refused at the next check. 0s = every refresh")
+
+	// Client registration
+	rootCmd.Flags().StringVar(&allowedRedirectURIs, "allowed-redirect-uris", getEnvWithDefault("ALLOWED_REDIRECT_URIS", ""), "Comma-separated glob patterns of additional redirect URIs dynamically registered clients may use (e.g. https://claude.ai/api/mcp/auth_callback). Loopback and custom-scheme (app) redirect URIs are always allowed. \"*\" matches within a path segment, \"**\" matches anything")
 
 	return rootCmd
 }

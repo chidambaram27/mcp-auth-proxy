@@ -6,6 +6,7 @@ import (
 	"embed"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"html/template"
 	"maps"
 	"math/big"
@@ -43,6 +44,13 @@ type IDPRouter struct {
 	authorizeTemplate *template.Template
 	branding          Branding
 	lifespans         TokenLifespans
+	redirectPolicy    RedirectPolicy
+	upstreamSealer    *utils.Sealer
+}
+
+// SetRedirectPolicy sets the redirect URIs allowed for registered clients.
+func (a *IDPRouter) SetRedirectPolicy(p RedirectPolicy) {
+	a.redirectPolicy = p
 }
 
 func NewIDPRouter(
@@ -58,19 +66,28 @@ func NewIDPRouter(
 	if err := lifespans.Validate(); err != nil {
 		return nil, err
 	}
+	upstreamKey, err := utils.DeriveKey(secret, utils.KeyPurposeUpstreamTokens)
+	if err != nil {
+		return nil, err
+	}
+	upstreamSealer, err := utils.NewSealer(upstreamKey)
+	if err != nil {
+		return nil, err
+	}
 	hasher := &fosite.BCrypt{
 		Config: &fosite.Config{
 			HashCost: bcrypt.DefaultCost,
 		},
 	}
 	config := &fosite.Config{
-		GlobalSecret:                   secret,
-		AccessTokenLifespan:            lifespans.AccessToken,
-		RefreshTokenLifespan:           lifespans.RefreshToken,
-		AuthorizeCodeLifespan:          lifespans.AuthorizeCode,
-		RefreshTokenScopes:             []string{},
-		AccessTokenIssuer:              externalURL,
-		EnforcePKCE:                    false,
+		GlobalSecret:          secret,
+		AccessTokenLifespan:   lifespans.AccessToken,
+		RefreshTokenLifespan:  lifespans.RefreshToken,
+		AuthorizeCodeLifespan: lifespans.AuthorizeCode,
+		RefreshTokenScopes:    []string{},
+		AccessTokenIssuer:     externalURL,
+		// OAuth 2.1 / MCP authorization: PKCE (S256) for every client.
+		EnforcePKCE:                    true,
 		EnforcePKCEForPublicClients:    true,
 		EnablePKCEPlainChallengeMethod: false,
 		ScopeStrategy:                  fosite.HierarchicScopeStrategy,
@@ -96,6 +113,7 @@ func NewIDPRouter(
 		authorizeTemplate: authorizeTemplate,
 		branding:          branding,
 		lifespans:         lifespans,
+		upstreamSealer:    upstreamSealer,
 	}, nil
 }
 
@@ -113,7 +131,6 @@ func customCompose(config *fosite.Config, storage any, key any) (fosite.OAuth2Pr
 		},
 		compose.OAuth2AuthorizeExplicitFactory,
 		compose.OAuth2RefreshTokenGrantFactory,
-		compose.OAuth2TokenIntrospectionFactory,
 		compose.OAuth2PKCEFactory,
 	)
 	return provider, signer
@@ -123,12 +140,16 @@ const (
 	AuthorizationEndpoint            = "/.idp/auth"
 	AuthorizationReturnEndpoint      = "/.idp/auth/:ar_id"
 	TokenEndpoint                    = "/.idp/token"
-	IntrospectionEndpoint            = "/.idp/introspect"
 	RegistrationEndpoint             = "/.idp/register"
 	OauthAuthorizationServerEndpoint = "/.well-known/oauth-authorization-server"
 	JWKSEndpoint                     = "/.well-known/jwks.json"
 	sessionKeyAuthorizeRequestIDs    = "idp_authorize_request_ids"
+	sessionKeyCSRFToken              = "idp_csrf_token"
+	csrfFormField                    = "csrf_token"
 	maxClientNameLength              = 100
+	maxRegistrationBodyBytes         = 64 << 10
+	maxRedirectURIs                  = 10
+	maxScopeLength                   = 1000
 )
 
 func (a *IDPRouter) SetupRoutes(router gin.IRouter) {
@@ -136,7 +157,6 @@ func (a *IDPRouter) SetupRoutes(router gin.IRouter) {
 	router.GET(AuthorizationReturnEndpoint, a.authRouter.RequireAuth(), a.handleAuthorizationReturnForm)
 	router.POST(AuthorizationReturnEndpoint, a.authRouter.RequireAuth(), a.handleAuthorizationReturn)
 	router.POST(TokenEndpoint, a.handleToken)
-	router.POST(IntrospectionEndpoint, a.handleIntrospect)
 	router.POST(RegistrationEndpoint, a.handleRegister)
 	router.GET(OauthAuthorizationServerEndpoint, a.handleOauthAuthorizationServer)
 	router.GET(JWKSEndpoint, a.handleJWKS)
@@ -164,6 +184,19 @@ func (a *IDPRouter) handleAuth(c *gin.Context) {
 	ar, err := a.provider.NewAuthorizeRequest(ctx, c.Request)
 	if err != nil {
 		a.provider.WriteAuthorizeError(ctx, c.Writer, ar, err)
+		return
+	}
+	// Clients registered before the redirect policy existed may hold any
+	// redirect URI. Refuse without redirecting to it.
+	if redirectURI := ar.GetRedirectURI(); redirectURI == nil || a.redirectPolicy.Check(redirectURI.String()) != nil {
+		a.logger.Warn("Authorization refused: redirect URI not allowed", zap.String("client_id", ar.GetClient().GetID()))
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid_request", "error_description": "The redirect URI is not allowed by this server."})
+		return
+	}
+	// fosite only enforces PKCE after the consent step; refuse up front so the
+	// user is not asked to approve a request that cannot succeed.
+	if ar.GetRequestForm().Get("code_challenge") == "" {
+		a.provider.WriteAuthorizeError(ctx, c.Writer, ar, fosite.ErrInvalidRequest.WithHint("Clients must use PKCE (code_challenge with code_challenge_method=S256)."))
 		return
 	}
 
@@ -218,6 +251,13 @@ func (a *IDPRouter) handleAuthorizationReturnForm(c *gin.Context) {
 		Footer:         a.branding.effectiveFooter(),
 		FooterDisabled: a.branding.footerDisabled(),
 	}
+	csrfToken, err := ensureCSRFToken(session)
+	if err != nil {
+		a.logger.Error("Failed to create CSRF token", zap.Error(err))
+		c.AbortWithStatusJSON(500, gin.H{"error": "Internal Server Error"})
+		return
+	}
+	data.CSRFToken = csrfToken
 	formActionSource := ""
 	if redirectURI := ar.GetRedirectURI(); redirectURI != nil {
 		data.RedirectHost, data.RedirectKind = describeRedirect(redirectURI)
@@ -235,6 +275,7 @@ func (a *IDPRouter) handleAuthorizationReturnForm(c *gin.Context) {
 }
 
 type authorizePageData struct {
+	CSRFToken    string
 	ClientName   string
 	ServerHost   string
 	ServerName   string
@@ -339,6 +380,16 @@ func (a *IDPRouter) handleAuthorizationReturn(c *gin.Context) {
 		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "invalid authorization session"})
 		return
 	}
+	if !a.validConsentSubmission(c, session) {
+		a.logger.Warn("Consent submission refused: failed CSRF/origin check")
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "invalid consent submission"})
+		return
+	}
+	action := c.PostForm("action")
+	if action != "approve" && action != "deny" {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid consent action"})
+		return
+	}
 
 	ar, err := a.repo.GetAuthorizeRequest(ctx, arID)
 	if err != nil {
@@ -352,7 +403,7 @@ func (a *IDPRouter) handleAuthorizationReturn(c *gin.Context) {
 		}
 	}()
 
-	if c.PostForm("action") == "deny" {
+	if action == "deny" {
 		removeAuthorizeRequestID(session, arID)
 		if err := session.Save(); err != nil {
 			a.logger.Error("Failed to remove authorize request from session", zap.Error(err))
@@ -385,6 +436,16 @@ func (a *IDPRouter) handleAuthorizationReturn(c *gin.Context) {
 	}
 	jwtSession.AuthTime = sessionAuthTime(session, time.Now())
 	jwtSession.Provider, jwtSession.AuthzFacts = auth.SessionIdentity(session)
+	if upstream, ok := session.Get(auth.SessionKeyUpstreamToken).(string); ok && upstream != "" {
+		sealed, err := a.upstreamSealer.Seal(upstream, subject)
+		if err != nil {
+			a.logger.Error("Failed to encrypt upstream token", zap.Error(err))
+			a.provider.WriteAuthorizeError(ctx, c.Writer, ar, fosite.ErrServerError.WithWrap(err))
+			return
+		}
+		jwtSession.UpstreamToken = sealed
+		jwtSession.UpstreamCheckedAt = jwtSession.AuthTime
+	}
 
 	response, err := a.provider.NewAuthorizeResponse(ctx, ar, jwtSession)
 	if err != nil {
@@ -470,8 +531,17 @@ func (a *IDPRouter) handleToken(c *gin.Context) {
 	if !a.stillAuthorized(accessRequest) {
 		a.logger.Info("Token request refused: user is no longer allowed by the current configuration",
 			zap.String("grant_type", c.PostForm("grant_type")), zap.String("subject", accessRequest.GetSession().GetSubject()))
+		a.revokeGrant(ctx, accessRequest)
 		a.provider.WriteAccessError(ctx, c.Writer, accessRequest, fosite.ErrInvalidGrant.
 			WithHint("The user is no longer authorized. The user must sign in again."))
+		return
+	}
+
+	if err := a.verifyUpstream(ctx, accessRequest, time.Now()); err != nil {
+		if errors.Is(err, fosite.ErrInvalidGrant) {
+			a.revokeGrant(ctx, accessRequest)
+		}
+		a.provider.WriteAccessError(ctx, c.Writer, accessRequest, err)
 		return
 	}
 
@@ -490,23 +560,6 @@ func (a *IDPRouter) handleToken(c *gin.Context) {
 	}
 
 	a.provider.WriteAccessResponse(ctx, c.Writer, accessRequest, response)
-}
-
-func (a *IDPRouter) handleIntrospect(c *gin.Context) {
-	ctx := c.Request.Context()
-	session, err := NewJWTSessionWithKey("", "", a.privKey, nil)
-	if err != nil {
-		a.provider.WriteIntrospectionError(ctx, c.Writer, fosite.ErrServerError.WithWrap(err))
-		return
-	}
-
-	ir, err := a.provider.NewIntrospectionRequest(ctx, c.Request, session)
-	if err != nil {
-		a.provider.WriteIntrospectionError(ctx, c.Writer, err)
-		return
-	}
-
-	a.provider.WriteIntrospectionResponse(ctx, c.Writer, ir)
 }
 
 type registrationRequest struct {
@@ -533,16 +586,22 @@ type registrationResponse struct {
 func (a *IDPRouter) handleRegister(c *gin.Context) {
 	ctx := c.Request.Context()
 
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxRegistrationBodyBytes)
 	var req registrationRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": "invalid_request", "error_description": err.Error()})
+		c.JSON(400, gin.H{"error": "invalid_client_metadata", "error_description": "invalid registration request"})
+		return
+	}
+	if code, desc := a.validateRegistration(&req); code != "" {
+		a.logger.Info("Client registration refused", zap.String("reason", desc))
+		c.JSON(400, gin.H{"error": code, "error_description": desc})
 		return
 	}
 
 	clientID, err := utils.GenerateClientID()
 	if err != nil {
 		a.logger.Error("Failed to generate client ID", zap.Error(err))
-		c.JSON(500, gin.H{"error": "server_error", "error_description": err.Error()})
+		c.JSON(500, gin.H{"error": "server_error"})
 		return
 	}
 
@@ -555,14 +614,14 @@ func (a *IDPRouter) handleRegister(c *gin.Context) {
 		clientSecret, err = utils.GenerateClientSecret()
 		if err != nil {
 			a.logger.Error("Failed to generate client secret", zap.Error(err))
-			c.JSON(500, gin.H{"error": "server_error", "error_description": err.Error()})
+			c.JSON(500, gin.H{"error": "server_error"})
 			return
 		}
 
 		hashedSecret, err = a.hasher.Hash(ctx, []byte(clientSecret))
 		if err != nil {
 			a.logger.Error("Failed to hash client secret", zap.Error(err))
-			c.JSON(500, gin.H{"error": "server_error", "error_description": err.Error()})
+			c.JSON(500, gin.H{"error": "server_error"})
 			return
 		}
 	}
@@ -579,7 +638,7 @@ func (a *IDPRouter) handleRegister(c *gin.Context) {
 	}
 	if err := a.repo.RegisterClient(ctx, client); err != nil {
 		a.logger.Error("Failed to register client", zap.String("client_id", clientID), zap.Error(err))
-		c.JSON(500, gin.H{"error": "server_error", "error_description": err.Error()})
+		c.JSON(500, gin.H{"error": "server_error"})
 		return
 	}
 	if name := sanitizeClientName(req.ClientName); name != "" {
@@ -595,14 +654,14 @@ func (a *IDPRouter) handleRegister(c *gin.Context) {
 	registrationClientURI, err := url.JoinPath(RegistrationEndpoint, clientID)
 	if err != nil {
 		a.logger.Error("Failed to create registration client URI", zap.String("client_id", clientID), zap.Error(err))
-		c.JSON(500, gin.H{"error": "server_error", "error_description": err.Error()})
+		c.JSON(500, gin.H{"error": "server_error"})
 		return
 	}
 
 	response := registrationResponse{
 		ClientID:                clientID,
 		RedirectURIs:            req.RedirectURIs,
-		ClientName:              req.ClientName,
+		ClientName:              sanitizeClientName(req.ClientName),
 		GrantTypes:              req.GrantTypes,
 		ResponseTypes:           req.ResponseTypes,
 		TokenEndpointAuthMethod: req.TokenEndpointAuthMethod,
@@ -634,19 +693,19 @@ func (a *IDPRouter) handleOauthAuthorizationServer(c *gin.Context) {
 	authorizationEndpoint, err := url.JoinPath(a.externalURL, AuthorizationEndpoint)
 	if err != nil {
 		a.logger.Error("Failed to create authorization endpoint URL", zap.Error(err))
-		c.JSON(500, gin.H{"error": "server_error", "error_description": err.Error()})
+		c.JSON(500, gin.H{"error": "server_error"})
 		return
 	}
 	tokenEndpoint, err := url.JoinPath(a.externalURL, TokenEndpoint)
 	if err != nil {
 		a.logger.Error("Failed to create token endpoint URL", zap.Error(err))
-		c.JSON(500, gin.H{"error": "server_error", "error_description": err.Error()})
+		c.JSON(500, gin.H{"error": "server_error"})
 		return
 	}
 	registrationEndpoint, err := url.JoinPath(a.externalURL, RegistrationEndpoint)
 	if err != nil {
 		a.logger.Error("Failed to create registration endpoint URL", zap.Error(err))
-		c.JSON(500, gin.H{"error": "server_error", "error_description": err.Error()})
+		c.JSON(500, gin.H{"error": "server_error"})
 		return
 	}
 
@@ -751,6 +810,12 @@ type Session struct {
 	// server-side only and never put in the issued tokens.
 	Provider   string         `json:"provider,omitempty"`
 	AuthzFacts map[string]any `json:"authz_facts,omitempty"`
+	// UpstreamToken is the upstream identity provider's refresh token,
+	// encrypted and bound to the subject. It is used to re-verify the user
+	// with the upstream provider on token refresh and is never put in tokens.
+	UpstreamToken string `json:"upstream_token,omitempty"`
+	// UpstreamCheckedAt is when the user was last verified upstream.
+	UpstreamCheckedAt time.Time `json:"upstream_checked_at,omitzero"`
 }
 
 func (s *Session) GetJWTClaims() jwt.JWTClaimsContainer {
@@ -784,9 +849,11 @@ func (s *Session) Clone() fosite.Session {
 		JWTHeader: &jwt.Headers{
 			Extra: make(map[string]any),
 		},
-		AuthTime:   s.AuthTime,
-		Provider:   s.Provider,
-		AuthzFacts: maps.Clone(s.AuthzFacts),
+		AuthTime:          s.AuthTime,
+		Provider:          s.Provider,
+		AuthzFacts:        maps.Clone(s.AuthzFacts),
+		UpstreamToken:     s.UpstreamToken,
+		UpstreamCheckedAt: s.UpstreamCheckedAt,
 	}
 
 	for k, v := range s.JWTHeader.Extra {

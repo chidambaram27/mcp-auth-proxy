@@ -111,7 +111,7 @@ func TestRefreshedAccessTokenHasFreshIssuedAtAndAuthTime(t *testing.T) {
 	require.Equal(t, c0["auth_time"], c1["auth_time"], "auth_time stays the login time")
 	require.GreaterOrEqual(t, c1["iat"].(float64)-c0["iat"].(float64), 2.0, "iat is the refresh time")
 	require.Equal(t, c1["iat"], c1["nbf"])
-	require.Equal(t, float64(24*60*60), c1["exp"].(float64)-c1["iat"].(float64))
+	require.Equal(t, DefaultAccessTokenLifespan.Seconds(), c1["exp"].(float64)-c1["iat"].(float64))
 }
 
 func TestMaxSessionAgeRefusesRefresh(t *testing.T) {
