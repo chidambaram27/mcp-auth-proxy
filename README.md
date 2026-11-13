@@ -80,8 +80,8 @@ _Note_: They are not mutually exclusive. You can **put `mcp-auth-proxy` in front
 This fork adds a small set of changes on top of upstream. `main` is upstream plus **one commit per
 change** (listed below), so the whole delta is easy to review:
 
-- On GitHub: [`sigbit:main...chidambaram27:v2.11.0-fork.1`](https://github.com/sigbit/mcp-auth-proxy/compare/main...chidambaram27:mcp-auth-proxy:v2.11.0-fork.1)
-- Locally: `git fetch upstream && git log --oneline upstream/main..v2.11.0-fork.1` / `git diff upstream/main v2.11.0-fork.1`
+- On GitHub: [`sigbit:main...chidambaram27:v2.12.0-fork.1`](https://github.com/sigbit/mcp-auth-proxy/compare/main...chidambaram27:mcp-auth-proxy:v2.12.0-fork.1)
+- Locally: `git fetch upstream && git log --oneline upstream/main..v2.12.0-fork.1` / `git diff upstream/main v2.12.0-fork.1`
 
 Based on upstream `main` at `76cf8e0` (release `v2.10.2` + #170). When upstream moves, the fork
 commits are rebased onto it and released again.
@@ -90,13 +90,15 @@ commits are rebased onto it and released again.
   `X.Y.Z` release); the upstream base is stated above and in each release's notes. `N` counts
   releases of the same fork version.
 - **Image**: `ghcr.io/chidambaram27/mcp-auth-proxy:vX.Y.Z-fork.N` (multi-arch amd64/arm64), plus the
-  moving tags `fork` and `latest-fork`. There are no `latest`, `main` or bare semver tags.
+  moving tags `fork` and `latest-fork`. There are no `latest`, `main` or bare semver tags. Each tag
+  also exists with a `-minimal` suffix (e.g. `vX.Y.Z-fork.N-minimal`): a distroless image without
+  Python/Node.js for HTTP backends. Both run as non-root and listen on `:8080` / `:8443`.
 - **Releases**: created manually with
   `gh release create vX.Y.Z-fork.N -R chidambaram27/mcp-auth-proxy --target main --generate-notes`;
   publishing the release builds and pushes the image and attaches binaries.
 - `mcp-auth-proxy --version` prints the release tag the binary was built from.
 
-All changes below are in [`v2.11.0-fork.1`](https://github.com/chidambaram27/mcp-auth-proxy/releases/tag/v2.11.0-fork.1).
+All changes below are in [`v2.12.0-fork.1`](https://github.com/chidambaram27/mcp-auth-proxy/releases/tag/v2.12.0-fork.1).
 
 | Commit | Change |
 | ------ | ------ |
@@ -108,3 +110,10 @@ All changes below are in [`v2.11.0-fork.1`](https://github.com/chidambaram27/mcp
 | [`b947b46`](https://github.com/chidambaram27/mcp-auth-proxy/commit/b947b46) | Absolute session cap (#8): `MAX_SESSION_AGE` (default `0` = off) counted from login, refresh refused after it, tokens never outlive it; access tokens get an `auth_time` claim; refreshed access tokens get a fresh `iat`/`nbf` (used to keep the login time) and `exp` = `iat` + lifespan |
 | [`d332ff5`](https://github.com/chidambaram27/mcp-auth-proxy/commit/d332ff5) | Allowlist re-check on every token request (#10): refresh and code exchange answer `invalid_grant` once the user is no longer allowed by the current `*_ALLOWED_*` / password / provider config, so removed users lose access within one `ACCESS_TOKEN_LIFESPAN` after a restart (previously never, as long as the client kept refreshing). GitHub org/team membership is not re-checked |
 | [`dbb1d89`](https://github.com/chidambaram27/mcp-auth-proxy/commit/dbb1d89) | Refresh token reuse detection (#9): a used refresh token is rejected and reuse revokes all refresh tokens of the grant (local + SQL backends; revocation by request ID used to be a no-op); concurrent refreshes with one token can't both succeed; `REFRESH_TOKEN_GRACE_PERIOD` (default `0s`) |
+| [`fb3881b`](https://github.com/chidambaram27/mcp-auth-proxy/commit/fb3881b) | Production security hardening (#11): `PROXY_HEADERS` replace client values and `Connection` can't strip identity headers; Google re-verification on every refresh (`UPSTREAM_RECHECK_INTERVAL`) revokes removed/suspended users, `ACCESS_TOKEN_LIFESPAN` default `1h`; Google requires `email_verified`; providers without allowlist refuse to start; PKCE for all clients; DCR redirect URI policy (`ALLOWED_REDIRECT_URIS`); consent CSRF; encrypted `__Host-` session cookie (10 min); graceful `SIGTERM` shutdown; timeouts, size and rate limits, security headers, log redaction, expired-record purge; Go 1.27.4 + updated deps (`govulncheck` clean); non-root images on `:8080`/`:8443`, distroless `-minimal` image, pinned digests/actions |
+
+**Breaking in `v2.12.0-fork.1`:** images listen on `:8080` / `:8443` and run as non-root (uid `10001`,
+`-minimal` `65532`: set the Service `targetPort` and `fsGroup`); PKCE (S256) is required; Google/GitHub/OIDC
+without an allowlist refuse to start; web-based MCP clients need their callback in `ALLOWED_REDIRECT_URIS`;
+sessions issued by earlier versions can't be refreshed, so users sign in once more. See the
+[configuration reference](docs/docs/configuration.md).
