@@ -11,8 +11,14 @@ import (
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
 	"github.com/sigbit/mcp-auth-proxy/v2/pkg/utils"
+	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
 )
+
+// LoginSessionMaxAge is how long a browser login is reused for new
+// authorizations before the user has to sign in again. It does not affect the
+// OAuth tokens issued to MCP clients, which are refreshed on their own.
+var LoginSessionMaxAge = time.Hour
 
 //go:embed templates/*
 var templateFS embed.FS
@@ -32,6 +38,14 @@ type AuthRouter struct {
 	// prevents oversized cookies when the provider returns many claims.
 	userInfoFields []string
 	branding       PageBranding
+	logger         *zap.Logger
+}
+
+// SetLogger sets the logger used for errors that are not shown to the user.
+func (a *AuthRouter) SetLogger(logger *zap.Logger) {
+	if logger != nil {
+		a.logger = logger
+	}
 }
 
 func NewAuthRouter(passwordHash []string, noProviderAutoSelect bool, userInfoFields []string, providers ...Provider) (*AuthRouter, error) {
@@ -58,6 +72,7 @@ func NewAuthRouter(passwordHash []string, noProviderAutoSelect bool, userInfoFie
 		errorTemplate:        errorTmpl,
 		noProviderAutoSelect: noProviderAutoSelect,
 		userInfoFields:       userInfoFields,
+		logger:               zap.NewNop(),
 	}, nil
 }
 
@@ -86,6 +101,9 @@ const (
 	// SessionKeyAuthzFacts holds the JSON-encoded allowlist inputs recorded
 	// at login (see Reauthorizer).
 	SessionKeyAuthzFacts = "authz_facts"
+	// SessionKeyUpstreamToken holds the upstream provider's refresh token for
+	// providers implementing UpstreamVerifier. The session cookie is encrypted.
+	SessionKeyUpstreamToken = "upstream_token"
 )
 
 func (a *AuthRouter) SetupRoutes(router gin.IRouter) {
@@ -100,6 +118,8 @@ func (a *AuthRouter) SetupRoutes(router gin.IRouter) {
 				a.renderError(c, errors.New("OAuth state is missing"))
 				return
 			}
+			// The state is single use.
+			session.Delete(SessionKeyOAuthState)
 			token, err := provider.Exchange(c, state.(string))
 			if err != nil {
 				a.renderError(c, err)
@@ -111,8 +131,18 @@ func (a *AuthRouter) SetupRoutes(router gin.IRouter) {
 				return
 			}
 			if !ok {
+				_ = session.Save()
 				a.renderUnauthorized(c, user, provider.Name())
 				return
+			}
+			if _, verifies := provider.(UpstreamVerifier); verifies {
+				if token.RefreshToken == "" {
+					a.renderError(c, errors.New("the identity provider did not issue a refresh token"))
+					return
+				}
+				session.Set(SessionKeyUpstreamToken, token.RefreshToken)
+			} else {
+				session.Delete(SessionKeyUpstreamToken)
 			}
 			session.Set(SessionKeyAuthorized, true)
 			session.Set(SessionKeyUserID, user)
@@ -210,6 +240,7 @@ func (a *AuthRouter) handleLoginPost(c *gin.Context) {
 	session.Set(SessionKeyAuthTime, time.Now().Unix())
 	session.Set(SessionKeyProvider, PasswordProvider)
 	session.Delete(SessionKeyAuthzFacts)
+	session.Delete(SessionKeyUpstreamToken)
 	redirectURL := session.Get(SessionKeyRedirectURL)
 	if redirectURL != nil {
 		session.Delete(SessionKeyRedirectURL)
@@ -228,7 +259,8 @@ func (a *AuthRouter) handleLoginPost(c *gin.Context) {
 
 func (a *AuthRouter) handleLogout(c *gin.Context) {
 	session := sessions.Default(c)
-	session.Delete(SessionKeyAuthorized)
+	session.Clear()
+	session.Options(sessions.Options{Path: "/", MaxAge: -1})
 	if err := session.Save(); err != nil {
 		a.renderError(c, err)
 		return
@@ -240,6 +272,12 @@ func (a *AuthRouter) RequireAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		session := sessions.Default(c)
 		authorized := session.Get(SessionKeyAuthorized)
+		if authorized != nil && loginExpired(session, time.Now()) {
+			for _, k := range []string{SessionKeyAuthorized, SessionKeyUserID, SessionKeyUserInfo, SessionKeyAuthTime, SessionKeyProvider, SessionKeyAuthzFacts, SessionKeyUpstreamToken} {
+				session.Delete(k)
+			}
+			authorized = nil
+		}
 		if authorized == nil {
 			session.Set(SessionKeyRedirectURL, c.Request.URL.String())
 			if err := session.Save(); err != nil {
@@ -257,6 +295,24 @@ func (a *AuthRouter) RequireAuth() gin.HandlerFunc {
 		}
 		c.Next()
 	}
+}
+
+// loginExpired reports whether the browser login is older than
+// LoginSessionMaxAge (or has no recorded login time).
+func loginExpired(session sessions.Session, now time.Time) bool {
+	var v int64
+	switch t := session.Get(SessionKeyAuthTime).(type) {
+	case int64:
+		v = t
+	case int:
+		v = int64(t)
+	case float64:
+		v = int64(t)
+	}
+	if v <= 0 {
+		return true
+	}
+	return now.Sub(time.Unix(v, 0)) > LoginSessionMaxAge
 }
 
 type loginTemplateData struct {
@@ -289,7 +345,7 @@ func (a *AuthRouter) renderLogin(c *gin.Context, passwordError string) {
 		HasPassword:   len(a.passwordHash) > 0,
 		PasswordError: passwordError,
 	}
-	c.Header("Content-Type", "text/html; charset=utf-8")
+	a.setPageSecurityHeaders(c)
 	if passwordError != "" {
 		c.Status(http.StatusBadRequest)
 	} else {
@@ -326,9 +382,14 @@ func filterUserInfo(m map[string]any, keys []string) map[string]any {
 	return filtered
 }
 
+// genericErrorMessage is shown instead of internal error details, which can
+// include upstream provider responses.
+const genericErrorMessage = "Sign-in failed. Please close this page and start again from your MCP client."
+
 func (a *AuthRouter) renderError(c *gin.Context, err error) {
+	a.logger.Warn("Authentication error", zap.String("path", c.Request.URL.Path), zap.Error(err))
 	data := errorTemplateData{
-		ErrorMessage: err.Error(),
+		ErrorMessage: genericErrorMessage,
 	}
 	a.setPageSecurityHeaders(c)
 	c.Status(http.StatusInternalServerError)

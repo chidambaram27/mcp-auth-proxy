@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	time "time"
 
 	"github.com/ory/fosite"
@@ -109,8 +111,17 @@ func (r *kvsRepository) GetAuthorizeCodeSession(ctx context.Context, code string
 	return fositeReq, nil
 }
 
+// InvalidateAuthorizeCodeSession deletes the code and fails if it was already
+// redeemed, so two concurrent exchanges of one code cannot both succeed.
 func (r *kvsRepository) InvalidateAuthorizeCodeSession(ctx context.Context, code string) error {
-	return r.delete(ctx, "authorize_code-"+code)
+	return r.db.Update(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(r.bucketName))
+		key := []byte("authorize_code-" + code)
+		if bucket.Get(key) == nil {
+			return fosite.ErrNotFound
+		}
+		return bucket.Delete(key)
+	})
 }
 
 // createIndexed stores a token record and adds its signature to the request's
@@ -361,6 +372,86 @@ func (r *kvsRepository) GetAuthorizeRequest(ctx context.Context, requestID strin
 
 func (r *kvsRepository) DeleteAuthorizeRequest(ctx context.Context, requestID string) error {
 	return r.delete(ctx, "authorize_request-"+requestID)
+}
+
+func (r *kvsRepository) PurgeExpired(ctx context.Context, now time.Time) (int, error) {
+	expiringPrefixes := map[string]fosite.TokenType{
+		"authorize_code-":  fosite.AuthorizeCode,
+		"pkce_request-":    fosite.AuthorizeCode,
+		accessTokenPrefix:  fosite.AccessToken,
+		refreshTokenPrefix: fosite.RefreshToken,
+	}
+	deleted := 0
+	err := r.db.Update(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(r.bucketName))
+		var expired [][]byte
+		var indexes [][]byte
+		err := bucket.ForEach(func(k, v []byte) error {
+			key := string(k)
+			if strings.HasPrefix(key, requestTokensPrefix) {
+				indexes = append(indexes, slices.Clone(k))
+				return nil
+			}
+			if strings.HasPrefix(key, "authorize_request-") {
+				var ar models.AuthorizeRequest
+				if json.Unmarshal(v, &ar) == nil && ar.Request != nil &&
+					!ar.Request.RequestedAt.IsZero() && now.Sub(ar.Request.RequestedAt) > AuthorizeRequestTTL {
+					expired = append(expired, slices.Clone(k))
+				}
+				return nil
+			}
+			for prefix, tokenType := range expiringPrefixes {
+				if !strings.HasPrefix(key, prefix) {
+					continue
+				}
+				var req models.Request
+				if json.Unmarshal(v, &req) != nil {
+					return nil
+				}
+				if exp := sessionExpiry(req.SessionData, tokenType); !exp.IsZero() && exp.Before(now) {
+					expired = append(expired, slices.Clone(k))
+				}
+				return nil
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		for _, k := range expired {
+			if err := bucket.Delete(k); err != nil {
+				return err
+			}
+		}
+		deleted = len(expired)
+		// Drop index entries whose tokens are gone.
+		for _, k := range indexes {
+			var idx requestTokens
+			if json.Unmarshal(bucket.Get(k), &idx) != nil {
+				continue
+			}
+			keep := func(prefix string, sigs []string) []string {
+				return slices.DeleteFunc(sigs, func(sig string) bool { return bucket.Get([]byte(prefix+sig)) == nil })
+			}
+			idx.Access = keep(accessTokenPrefix, idx.Access)
+			idx.Refresh = keep(refreshTokenPrefix, idx.Refresh)
+			if len(idx.Access) == 0 && len(idx.Refresh) == 0 {
+				if err := bucket.Delete(k); err != nil {
+					return err
+				}
+				continue
+			}
+			raw, err := json.Marshal(idx)
+			if err != nil {
+				return err
+			}
+			if err := bucket.Put(k, raw); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return deleted, err
 }
 
 func (r *kvsRepository) Close() error {

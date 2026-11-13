@@ -47,7 +47,7 @@ func renderAuthorizePage(t *testing.T, serverURL, clientName, redirectURI string
 
 	authURL := fmt.Sprintf("%s%s?response_type=code&client_id=%s&redirect_uri=%s&state=test-state",
 		serverURL, AuthorizationEndpoint, regResp.ClientID, url.QueryEscape(redirectURI))
-	authResp, err := client.Get(authURL)
+	authResp, err := client.Get(withPKCE(t, authURL))
 	require.NoError(t, err)
 	defer authResp.Body.Close()
 	location := authResp.Header.Get("Location")
@@ -424,7 +424,7 @@ func renderWithClient(t *testing.T, client *http.Client, serverURL, clientName, 
 
 	authURL := fmt.Sprintf("%s%s?response_type=code&client_id=%s&redirect_uri=%s&state=test-state",
 		serverURL, AuthorizationEndpoint, regResp.ClientID, url.QueryEscape(redirectURI))
-	authResp, err := client.Get(authURL)
+	authResp, err := client.Get(withPKCE(t, authURL))
 	require.NoError(t, err)
 	defer authResp.Body.Close()
 	location := authResp.Header.Get("Location")
@@ -460,8 +460,8 @@ func TestAuthorizePageDenyRedirectsWithAccessDenied(t *testing.T) {
 
 	jar, _ := cookiejar.New(nil)
 	client := &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	authResp, err := client.Get(fmt.Sprintf("%s%s?response_type=code&client_id=%s&redirect_uri=%s&state=deny-state-123",
-		server.URL, AuthorizationEndpoint, regResp.ClientID, url.QueryEscape(redirectURI)))
+	authResp, err := client.Get(withPKCE(t, fmt.Sprintf("%s%s?response_type=code&client_id=%s&redirect_uri=%s&state=deny-state-123",
+		server.URL, AuthorizationEndpoint, regResp.ClientID, url.QueryEscape(redirectURI))))
 	require.NoError(t, err)
 	authResp.Body.Close()
 	location := authResp.Header.Get("Location")
@@ -472,9 +472,7 @@ func TestAuthorizePageDenyRedirectsWithAccessDenied(t *testing.T) {
 	page.Body.Close()
 	require.Contains(t, string(body), `name="action" value="deny"`)
 
-	denyResp, err := client.PostForm(server.URL+location, url.Values{"action": {"deny"}})
-	require.NoError(t, err)
-	denyResp.Body.Close()
+	denyResp := submitConsent(t, client, server.URL, location, "deny")
 	require.Equal(t, http.StatusSeeOther, denyResp.StatusCode)
 	cb, err := url.Parse(denyResp.Header.Get("Location"))
 	require.NoError(t, err)

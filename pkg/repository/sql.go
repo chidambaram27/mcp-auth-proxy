@@ -142,8 +142,17 @@ func (r *sqlRepository) GetAuthorizeCodeSession(ctx context.Context, code string
 	return unmarshalRequest(session.Request, sess)
 }
 
+// InvalidateAuthorizeCodeSession deletes the code and fails if it was already
+// redeemed, so two concurrent exchanges of one code cannot both succeed.
 func (r *sqlRepository) InvalidateAuthorizeCodeSession(ctx context.Context, code string) error {
-	return r.db.WithContext(ctx).Delete(&authorizeCodeSession{}, "code = ?", code).Error
+	res := r.db.WithContext(ctx).Delete(&authorizeCodeSession{}, "code = ?", code)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return fosite.ErrNotFound
+	}
+	return nil
 }
 
 func (r *sqlRepository) CreateAccessTokenSession(ctx context.Context, signature string, fositeReq fosite.Requester) error {
@@ -404,6 +413,82 @@ func (r *sqlRepository) GetAuthorizeRequest(ctx context.Context, requestID strin
 
 func (r *sqlRepository) DeleteAuthorizeRequest(ctx context.Context, requestID string) error {
 	return r.db.WithContext(ctx).Delete(&authorizeRequestRecord{}, "request_id = ?", requestID).Error
+}
+
+// purgeBatchSize bounds the rows loaded per batch while purging.
+var purgeBatchSize = 500
+
+func (r *sqlRepository) PurgeExpired(ctx context.Context, now time.Time) (int, error) {
+	db := r.db.WithContext(ctx)
+	total := 0
+
+	res := db.Where("created_at < ?", now.Add(-AuthorizeRequestTTL)).Delete(&authorizeRequestRecord{})
+	if res.Error != nil {
+		return total, res.Error
+	}
+	total += int(res.RowsAffected)
+
+	purge := func(model any, keyColumn string, tokenType fosite.TokenType) error {
+		var expired []string
+		last := ""
+		for {
+			rows, err := db.Model(model).Select(keyColumn, "request").
+				Where(keyColumn+" > ?", last).Order(keyColumn).Limit(purgeBatchSize).Rows()
+			if err != nil {
+				return err
+			}
+			n := 0
+			for rows.Next() {
+				var key string
+				var data []byte
+				if err := rows.Scan(&key, &data); err != nil {
+					rows.Close()
+					return err
+				}
+				n++
+				last = key
+				var req models.Request
+				if json.Unmarshal(data, &req) != nil {
+					continue
+				}
+				if exp := sessionExpiry(req.SessionData, tokenType); !exp.IsZero() && exp.Before(now) {
+					expired = append(expired, key)
+				}
+			}
+			err = rows.Err()
+			rows.Close()
+			if err != nil {
+				return err
+			}
+			if n < purgeBatchSize {
+				break
+			}
+		}
+		for start := 0; start < len(expired); start += purgeBatchSize {
+			end := min(start+purgeBatchSize, len(expired))
+			res := db.Where(keyColumn+" IN ?", expired[start:end]).Delete(model)
+			if res.Error != nil {
+				return res.Error
+			}
+			total += int(res.RowsAffected)
+		}
+		return nil
+	}
+	for _, t := range []struct {
+		model     any
+		key       string
+		tokenType fosite.TokenType
+	}{
+		{&authorizeCodeSession{}, "code", fosite.AuthorizeCode},
+		{&pkceRequestSession{}, "signature", fosite.AuthorizeCode},
+		{&accessTokenSession{}, "signature", fosite.AccessToken},
+		{&refreshTokenSession{}, "signature", fosite.RefreshToken},
+	} {
+		if err := purge(t.model, t.key, t.tokenType); err != nil {
+			return total, fmt.Errorf("failed to purge expired records: %w", err)
+		}
+	}
+	return total, nil
 }
 
 func (r *sqlRepository) Close() error {

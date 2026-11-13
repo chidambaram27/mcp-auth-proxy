@@ -6,7 +6,9 @@ import (
 )
 
 const (
-	DefaultAccessTokenLifespan   = 24 * time.Hour
+	// DefaultAccessTokenLifespan is short because access tokens are JWTs that
+	// cannot be revoked; users removed upstream lose access at the next refresh.
+	DefaultAccessTokenLifespan   = time.Hour
 	DefaultRefreshTokenLifespan  = 30 * 24 * time.Hour
 	DefaultAuthorizeCodeLifespan = 15 * time.Minute
 )
@@ -23,10 +25,14 @@ type TokenLifespans struct {
 	// RefreshTokenGracePeriod is how long an already used refresh token is
 	// still accepted (0 = single use; reuse revokes the token family).
 	RefreshTokenGracePeriod time.Duration
+	// UpstreamRecheckInterval is the minimum time between re-verifications of
+	// the user with the upstream identity provider on token refresh (for
+	// providers that support it, e.g. Google). 0 re-verifies on every refresh.
+	UpstreamRecheckInterval time.Duration
 }
 
-// DefaultTokenLifespans returns the upstream lifespans (24h access token,
-// 30d refresh token, 15m authorization code).
+// DefaultTokenLifespans returns the default lifespans (1h access token, 30d
+// refresh token, 15m authorization code, upstream re-check on every refresh).
 func DefaultTokenLifespans() TokenLifespans {
 	return TokenLifespans{
 		AccessToken:   DefaultAccessTokenLifespan,
@@ -37,7 +43,7 @@ func DefaultTokenLifespans() TokenLifespans {
 
 // ParseTokenLifespans parses Go duration strings (e.g. "1h", "720h", "90s").
 // Token lifespans must be positive; maxSessionAge and the grace period may be 0.
-func ParseTokenLifespans(accessToken, refreshToken, authorizeCode, maxSessionAge, refreshTokenGracePeriod string) (TokenLifespans, error) {
+func ParseTokenLifespans(accessToken, refreshToken, authorizeCode, maxSessionAge, refreshTokenGracePeriod, upstreamRecheckInterval string) (TokenLifespans, error) {
 	var l TokenLifespans
 	for _, f := range []struct {
 		name  string
@@ -49,6 +55,7 @@ func ParseTokenLifespans(accessToken, refreshToken, authorizeCode, maxSessionAge
 		{"authorize code lifespan", authorizeCode, &l.AuthorizeCode},
 		{"max session age", maxSessionAge, &l.MaxSessionAge},
 		{"refresh token grace period", refreshTokenGracePeriod, &l.RefreshTokenGracePeriod},
+		{"upstream recheck interval", upstreamRecheckInterval, &l.UpstreamRecheckInterval},
 	} {
 		d, err := time.ParseDuration(f.value)
 		if err != nil {
@@ -71,6 +78,9 @@ func (l TokenLifespans) Validate() error {
 	}
 	if l.RefreshTokenGracePeriod < 0 {
 		return fmt.Errorf("refresh token grace period must not be negative, got %s", l.RefreshTokenGracePeriod)
+	}
+	if l.UpstreamRecheckInterval < 0 {
+		return fmt.Errorf("upstream recheck interval must not be negative, got %s", l.UpstreamRecheckInterval)
 	}
 	if l.MaxSessionAge < 0 {
 		return fmt.Errorf("max session age must not be negative, got %s", l.MaxSessionAge)

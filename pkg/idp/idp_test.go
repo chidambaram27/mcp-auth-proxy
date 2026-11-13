@@ -9,15 +9,18 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-contrib/sessions/cookie"
@@ -105,6 +108,10 @@ func setupTestServerWithProvider(t *testing.T, branding Branding, lifespans Toke
 		session.Set(auth.SessionKeyUserID, "test-user@example.com")
 		session.Set(auth.SessionKeyUserInfo, `{"email":"test-user@example.com","name":"Test User"}`)
 		session.Set(auth.SessionKeyProvider, provider.Type())
+		session.Set(auth.SessionKeyAuthTime, time.Now().Unix())
+		if up, ok := provider.(interface{ upstreamToken() string }); ok {
+			session.Set(auth.SessionKeyUpstreamToken, up.upstreamToken())
+		}
 		err := session.Save()
 		if err != nil {
 			c.JSON(500, gin.H{"error": "Failed to save session"})
@@ -121,6 +128,9 @@ func setupTestServerWithProvider(t *testing.T, branding Branding, lifespans Toke
 	logger, _ := zap.NewDevelopment()
 	idpRouter, err := NewIDPRouter(repo, privKey, logger, "http://localhost:8080", secret[:], authRouter, branding, lifespans)
 	require.NoError(t, err)
+	policy, err := NewRedirectPolicy([]string{"https://chat.example.com/**"})
+	require.NoError(t, err)
+	idpRouter.SetRedirectPolicy(policy)
 
 	idpRouter.SetupRoutes(router)
 
@@ -232,7 +242,7 @@ func TestPrivateClient(t *testing.T) {
 		},
 	}
 	state := "test-state"
-	authURL := config.AuthCodeURL(state, oauth2.AccessTypeOffline)
+	authURL := config.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.S256ChallengeOption(testCodeVerifier))
 
 	jar, err := cookiejar.New(nil)
 	require.NoError(t, err)
@@ -254,16 +264,9 @@ func TestPrivateClient(t *testing.T) {
 	require.NotEmpty(t, location)
 	require.Contains(t, location, strings.ReplaceAll(AuthorizationReturnEndpoint, ":ar_id", ""))
 
-	// Step 2: GET renders the authorization confirmation form without granting
-	authReturnResp, err := client.Get(server.URL + location)
-	require.NoError(t, err)
-	defer authReturnResp.Body.Close()
-	require.Equal(t, http.StatusOK, authReturnResp.StatusCode)
-
-	// Step 3: POST the confirmation to complete authorization
-	authReturnResp, err = client.Post(server.URL+location, "application/x-www-form-urlencoded", nil)
-	require.NoError(t, err)
-	defer authReturnResp.Body.Close()
+	// Step 2+3: GET renders the confirmation form without granting; POST
+	// it (with the CSRF token) to complete authorization.
+	authReturnResp := submitConsent(t, client, server.URL, location, "approve")
 
 	// Should get another redirect with authorization code
 	require.Contains(t, []int{http.StatusFound, http.StatusSeeOther}, authReturnResp.StatusCode)
@@ -285,6 +288,7 @@ func TestPrivateClient(t *testing.T) {
 	tokenReq.Set("redirect_uri", "http://localhost:8080/callback")
 	tokenReq.Set("client_id", regResp.ClientID)
 	tokenReq.Set("client_secret", regResp.ClientSecret)
+	tokenReq.Set("code_verifier", testCodeVerifier)
 
 	tokenResp, err := http.PostForm(server.URL+TokenEndpoint, tokenReq)
 	require.NoError(t, err)
@@ -378,7 +382,7 @@ func testAuthFlowWithURL(t *testing.T, serverURL, authURL string) *url.URL {
 	}
 
 	// Step 1: Make initial authorization request
-	authResp, err := client.Get(authURL)
+	authResp, err := client.Get(withPKCE(t, authURL))
 	require.NoError(t, err)
 	defer authResp.Body.Close()
 
@@ -388,16 +392,8 @@ func testAuthFlowWithURL(t *testing.T, serverURL, authURL string) *url.URL {
 	require.NotEmpty(t, location)
 	require.Contains(t, location, strings.ReplaceAll(AuthorizationReturnEndpoint, ":ar_id", ""))
 
-	// Step 2: GET renders the authorization confirmation form without granting
-	authReturnResp, err := client.Get(serverURL + location)
-	require.NoError(t, err)
-	defer authReturnResp.Body.Close()
-	require.Equal(t, http.StatusOK, authReturnResp.StatusCode)
-
-	// Step 3: POST the confirmation to complete authorization
-	authReturnResp, err = client.Post(serverURL+location, "application/x-www-form-urlencoded", nil)
-	require.NoError(t, err)
-	defer authReturnResp.Body.Close()
+	// Step 2+3: GET the confirmation form, then POST it with its CSRF token.
+	authReturnResp := submitConsent(t, client, serverURL, location, "approve")
 
 	require.Contains(t, []int{http.StatusFound, http.StatusSeeOther}, authReturnResp.StatusCode,
 		"expected redirect with authorization code, got %d", authReturnResp.StatusCode)
@@ -427,7 +423,7 @@ func TestAuthorizationReturnRequiresOriginalSession(t *testing.T) {
 			return http.ErrUseLastResponse
 		},
 	}
-	authResp, err := attackerClient.Get(authURL)
+	authResp, err := attackerClient.Get(withPKCE(t, authURL))
 	require.NoError(t, err)
 	defer authResp.Body.Close()
 	require.Contains(t, []int{http.StatusFound, http.StatusSeeOther}, authResp.StatusCode)
@@ -443,61 +439,46 @@ func TestAuthorizationReturnRequiresOriginalSession(t *testing.T) {
 	require.Equal(t, http.StatusForbidden, victimResp.StatusCode)
 }
 
-func TestPublicClientRequiresPKCE(t *testing.T) {
-	server, _, _ := setupTestServer(t)
+func TestClientsRequirePKCE(t *testing.T) {
+	for _, method := range []string{"none", "client_secret_basic"} {
+		t.Run(method, func(t *testing.T) {
+			server, _, _ := setupTestServer(t)
 
-	regReq := registrationRequest{
-		ClientName:              "Public OAuth Client",
-		GrantTypes:              []string{"authorization_code", "refresh_token"},
-		ResponseTypes:           []string{"code"},
-		TokenEndpointAuthMethod: "none",
-		Scope:                   "test",
-		RedirectURIs:            []string{"http://localhost:8080/callback"},
+			regReq := registrationRequest{
+				ClientName:              "OAuth Client",
+				GrantTypes:              []string{"authorization_code", "refresh_token"},
+				ResponseTypes:           []string{"code"},
+				TokenEndpointAuthMethod: method,
+				RedirectURIs:            []string{"http://localhost:8080/callback"},
+			}
+			reqBody, err := json.Marshal(regReq)
+			require.NoError(t, err)
+			resp, err := http.Post(server.URL+RegistrationEndpoint, "application/json", bytes.NewReader(reqBody))
+			require.NoError(t, err)
+			defer resp.Body.Close()
+			require.Equal(t, http.StatusCreated, resp.StatusCode)
+			var regResp registrationResponse
+			require.NoError(t, json.NewDecoder(resp.Body).Decode(&regResp))
+
+			authURL := fmt.Sprintf("%s%s?response_type=code&client_id=%s&redirect_uri=%s&state=test-state",
+				server.URL, AuthorizationEndpoint, regResp.ClientID,
+				url.QueryEscape("http://localhost:8080/callback"))
+			client := &http.Client{
+				Jar:           mustCookieJar(t),
+				CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse },
+			}
+			authResp, err := client.Get(authURL)
+			require.NoError(t, err)
+			defer authResp.Body.Close()
+
+			// Refused before the consent page: redirected back with an error.
+			callbackURL, err := url.Parse(authResp.Header.Get("Location"))
+			require.NoError(t, err)
+			require.Equal(t, "localhost:8080", callbackURL.Host)
+			require.Empty(t, callbackURL.Query().Get("code"))
+			require.Equal(t, "invalid_request", callbackURL.Query().Get("error"))
+		})
 	}
-	reqBody, err := json.Marshal(regReq)
-	require.NoError(t, err)
-
-	resp, err := http.Post(server.URL+RegistrationEndpoint, "application/json", bytes.NewReader(reqBody))
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	require.Equal(t, http.StatusCreated, resp.StatusCode)
-
-	var regResp registrationResponse
-	err = json.NewDecoder(resp.Body).Decode(&regResp)
-	require.NoError(t, err)
-	require.Empty(t, regResp.ClientSecret)
-
-	authURL := fmt.Sprintf("%s%s?response_type=code&client_id=%s&redirect_uri=%s&state=test-state",
-		server.URL, AuthorizationEndpoint, regResp.ClientID,
-		url.QueryEscape("http://localhost:8080/callback"))
-
-	client := &http.Client{
-		Jar: mustCookieJar(t),
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-	authResp, err := client.Get(authURL)
-	require.NoError(t, err)
-	defer authResp.Body.Close()
-	require.Contains(t, []int{http.StatusFound, http.StatusSeeOther}, authResp.StatusCode)
-	location := authResp.Header.Get("Location")
-	require.NotEmpty(t, location)
-
-	formResp, err := client.Get(server.URL + location)
-	require.NoError(t, err)
-	defer formResp.Body.Close()
-	require.Equal(t, http.StatusOK, formResp.StatusCode)
-
-	authReturnResp, err := client.Post(server.URL+location, "application/x-www-form-urlencoded", nil)
-	require.NoError(t, err)
-	defer authReturnResp.Body.Close()
-	require.Contains(t, []int{http.StatusFound, http.StatusSeeOther}, authReturnResp.StatusCode)
-
-	callbackURL, err := url.Parse(authReturnResp.Header.Get("Location"))
-	require.NoError(t, err)
-	require.Empty(t, callbackURL.Query().Get("code"))
-	require.NotEmpty(t, callbackURL.Query().Get("error"))
 }
 
 func mustCookieJar(t *testing.T) http.CookieJar {
@@ -529,6 +510,7 @@ func TestAuthWithoutState(t *testing.T) {
 	tokenReq.Set("redirect_uri", "http://localhost:8080/callback")
 	tokenReq.Set("client_id", regResp.ClientID)
 	tokenReq.Set("client_secret", regResp.ClientSecret)
+	tokenReq.Set("code_verifier", testCodeVerifier)
 
 	tokenResp, err := http.PostForm(server.URL+TokenEndpoint, tokenReq)
 	require.NoError(t, err)
@@ -564,6 +546,7 @@ func TestAuthWithEmptyState(t *testing.T) {
 	tokenReq.Set("redirect_uri", "http://localhost:8080/callback")
 	tokenReq.Set("client_id", regResp.ClientID)
 	tokenReq.Set("client_secret", regResp.ClientSecret)
+	tokenReq.Set("code_verifier", testCodeVerifier)
 
 	tokenResp, err := http.PostForm(server.URL+TokenEndpoint, tokenReq)
 	require.NoError(t, err)
@@ -601,6 +584,7 @@ func TestAccessTokenAudienceClaim(t *testing.T) {
 	tokenReq.Set("redirect_uri", "http://localhost:8080/callback")
 	tokenReq.Set("client_id", regResp.ClientID)
 	tokenReq.Set("client_secret", regResp.ClientSecret)
+	tokenReq.Set("code_verifier", testCodeVerifier)
 
 	tokenResp, err := http.PostForm(server.URL+TokenEndpoint, tokenReq)
 	require.NoError(t, err)
@@ -653,6 +637,7 @@ func TestAccessTokenPreservesUserIdentity(t *testing.T) {
 	tokenReq.Set("redirect_uri", "http://localhost:8080/callback")
 	tokenReq.Set("client_id", regResp.ClientID)
 	tokenReq.Set("client_secret", regResp.ClientSecret)
+	tokenReq.Set("code_verifier", testCodeVerifier)
 
 	tokenResp, err := http.PostForm(server.URL+TokenEndpoint, tokenReq)
 	require.NoError(t, err)
@@ -686,4 +671,41 @@ func TestAccessTokenPreservesUserIdentity(t *testing.T) {
 	require.True(t, ok, "userinfo claim should be present")
 	require.Equal(t, "test-user@example.com", userinfo["email"])
 	require.Equal(t, "Test User", userinfo["name"])
+}
+
+// testCodeVerifier is the PKCE verifier used by the test flows.
+const testCodeVerifier = "test-code-verifier-0123456789-abcdefghijklmnopqrstuvwxyz"
+
+// withPKCE adds an S256 code challenge for testCodeVerifier to authURL.
+func withPKCE(t *testing.T, authURL string) string {
+	t.Helper()
+	u, err := url.Parse(authURL)
+	require.NoError(t, err)
+	q := u.Query()
+	if q.Get("code_challenge") == "" {
+		q.Set("code_challenge", oauth2.S256ChallengeFromVerifier(testCodeVerifier))
+		q.Set("code_challenge_method", "S256")
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+var csrfInputPattern = regexp.MustCompile(`name="csrf_token" value="([0-9a-f]+)"`)
+
+// submitConsent loads the consent page at location and submits it with the
+// given action and the page's CSRF token.
+func submitConsent(t *testing.T, client *http.Client, serverURL, location, action string) *http.Response {
+	t.Helper()
+	page, err := client.Get(serverURL + location)
+	require.NoError(t, err)
+	body, err := io.ReadAll(page.Body)
+	page.Body.Close()
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, page.StatusCode)
+	m := csrfInputPattern.FindStringSubmatch(string(body))
+	require.Len(t, m, 2, "consent page must contain a CSRF token")
+	resp, err := client.PostForm(serverURL+location, url.Values{"action": {action}, "csrf_token": {m[1]}})
+	require.NoError(t, err)
+	t.Cleanup(func() { resp.Body.Close() })
+	return resp
 }

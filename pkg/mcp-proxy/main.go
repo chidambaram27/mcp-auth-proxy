@@ -13,12 +13,12 @@ import (
 	"path"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/blendle/zapdriver"
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-contrib/sessions/cookie"
-	ginzap "github.com/gin-contrib/zap"
 	"github.com/gin-gonic/gin"
 	"github.com/sigbit/mcp-auth-proxy/v2/pkg/auth"
 	"github.com/sigbit/mcp-auth-proxy/v2/pkg/backend"
@@ -86,8 +86,10 @@ func Run(
 	authorizeBanner string,
 	authorizeFooter string,
 	tokenLifespans idp.TokenLifespans,
+	allowedRedirectURIs []string,
 ) error {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	// SIGTERM is what Kubernetes and Docker send on shutdown.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	parsedExternalURL, err := url.Parse(externalURL)
@@ -114,11 +116,24 @@ func Run(
 		return fmt.Errorf("tlsHost requires automatic TLS; remove noAutoTLS or provide certificate files instead")
 	}
 
-	if err := os.MkdirAll(dataPath, os.ModePerm); err != nil {
+	if err := requireAllowlists(
+		googleClientID != "" && googleClientSecret != "", googleAllowedUsers, googleAllowedWorkspaces,
+		githubClientID != "" && githubClientSecret != "", githubAllowedUsers, githubAllowedOrgs,
+		oidcConfigurationURL != "" && oidcClientID != "" && oidcClientSecret != "", oidcAllowedUsers, oidcAllowedUsersGlob, oidcAllowedAttributes, oidcAllowedAttributesGlob,
+	); err != nil {
+		return err
+	}
+	redirectPolicy, err := idp.NewRedirectPolicy(allowedRedirectURIs)
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(dataPath, 0o700); err != nil {
 		return fmt.Errorf("failed to create data directory: %w", err)
 	}
 
 	var secret []byte
+	secretFromEnv := os.Getenv("AUTH_HMAC_SECRET") != ""
 	if envSecret := os.Getenv("AUTH_HMAC_SECRET"); envSecret != "" {
 		secret, err = utils.SecretFromBase64(envSecret)
 		if err != nil {
@@ -142,6 +157,15 @@ func Run(
 	logger, err := config.Build()
 	if err != nil {
 		return fmt.Errorf("failed to build logger: %w", err)
+	}
+	if !secretFromEnv {
+		logger.Warn("AUTH_HMAC_SECRET is not set; using a secret stored in the data directory. Set it from a secret manager in production (it must be identical on all replicas)")
+	}
+	if os.Getenv("JWT_PRIVATE_KEY") == "" {
+		logger.Warn("JWT_PRIVATE_KEY is not set; using a key stored in the data directory. Set it from a secret manager in production (it must be identical on all replicas)")
+	}
+	if password != "" || passwordHash != "" {
+		logger.Warn("Password login is enabled; anyone with the shared password gets access and it cannot be revoked per user")
 	}
 
 	if len(proxyTarget) == 0 {
@@ -224,6 +248,17 @@ func Run(
 			logger.Warn("failed to close repository", zap.Error(err))
 		}
 	}()
+	purgeCtx, stopPurge := context.WithCancel(ctx)
+	purgeDone := make(chan struct{})
+	go func() {
+		defer close(purgeDone)
+		runPurgeLoop(purgeCtx, repo, logger)
+	}()
+	// Stop purging before the repository is closed.
+	defer func() {
+		stopPurge()
+		<-purgeDone
+	}()
 
 	var privKey *rsa.PrivateKey
 	if envKey := os.Getenv("JWT_PRIVATE_KEY"); envKey != "" {
@@ -278,7 +313,7 @@ func Run(
 		providers = append(providers, oidcProvider)
 	}
 
-	var passwordHashes []string
+	var hashes []string
 
 	// Handle password argument - generate bcrypt hash if provided
 	if password != "" {
@@ -286,22 +321,23 @@ func Run(
 		if err != nil {
 			return fmt.Errorf("failed to generate password hash: %w", err)
 		}
-		passwordHashes = append(passwordHashes, string(hash))
+		hashes = append(hashes, string(hash))
 	}
 
 	// Handle password-hash argument - use directly if provided
 	if passwordHash != "" {
-		passwordHashes = append(passwordHashes, passwordHash)
+		hashes = append(hashes, passwordHash)
 	}
 
 	// Collect the top-level userinfo keys that are actually needed so the
 	// session cookie doesn't store the entire provider response.
 	userInfoFields := userInfoFieldsFromConfig(oidcUserIDField, headerMapping)
 
-	authRouter, err := auth.NewAuthRouter(passwordHashes, noProviderAutoSelect, userInfoFields, providers...)
+	authRouter, err := auth.NewAuthRouter(hashes, noProviderAutoSelect, userInfoFields, providers...)
 	if err != nil {
 		return fmt.Errorf("failed to create auth router: %w", err)
 	}
+	authRouter.SetLogger(logger)
 	branding, err := idp.LoadBranding(authorizeServerName, authorizeLogo, authorizeBanner, authorizeFooter)
 	if err != nil {
 		// Cosmetic setting: keep serving with the default icon rather than
@@ -316,29 +352,33 @@ func Run(
 	if err != nil {
 		return fmt.Errorf("failed to create IDP router: %w", err)
 	}
+	idpRouter.SetRedirectPolicy(redirectPolicy)
 	proxyRouter, err := newProxyRouter(externalURL, beHandler, &privKey.PublicKey, proxyHeadersMap, httpStreamingOnly, forwardAuthorizationHeader, headerMapping, headerMappingBase)
 	if err != nil {
 		return fmt.Errorf("failed to create proxy router: %w", err)
 	}
+	cookieName := sessionCookieName(parsedExternalURL)
+	proxyRouter.SetStripCookies(cookieName)
 
 	router := gin.New()
-	router.SetTrustedProxies(trustedProxy)
+	if err := router.SetTrustedProxies(trustedProxy); err != nil {
+		return fmt.Errorf("invalid trusted proxies: %w", err)
+	}
 
 	router.GET("/healthz", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
-	router.Use(ginzap.Ginzap(logger, time.RFC3339, true))
+	router.Use(requestLogger(logger))
 	router.Use(recoveryMiddleware(logger))
-	store := cookie.NewStore(secret)
-	store.Options(sessions.Options{
-		Path:     "/",
-		MaxAge:   600,
-		HttpOnly: true,
-		Secure:   sessionCookieSecure(parsedExternalURL),
-		SameSite: http.SameSiteLaxMode,
-	})
-	router.Use(sessions.Sessions("session", store))
+	router.Use(securityHeadersMiddleware(parsedExternalURL.Scheme == "https"))
+	router.Use(bodyLimitMiddleware(maxRequestBodyBytes))
+	router.Use(rateLimitMiddleware())
+	store, err := newSessionStore(secret, sessionCookieSecure(parsedExternalURL))
+	if err != nil {
+		return fmt.Errorf("failed to create session store: %w", err)
+	}
+	router.Use(sessions.Sessions(cookieName, store))
 	authRouter.SetupRoutes(router)
 	idpRouter.SetupRoutes(router)
 	proxyRouter.SetupRoutes(router)
@@ -364,22 +404,9 @@ func Run(
 		}
 
 		logger.Info("Starting server with provided TLS certificate")
-		httpServer := &http.Server{
-			Addr: listen,
-			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				host := r.Host
-				if host == "" {
-					host = r.URL.Host
-				}
-				target := "https://" + host + r.RequestURI
-				http.Redirect(w, r, target, http.StatusMovedPermanently)
-			}),
-		}
-		httpsServer := &http.Server{
-			Addr:      tlsListen,
-			Handler:   router,
-			TLSConfig: &tls.Config{GetCertificate: certReloader.GetCertificate},
-		}
+		httpServer := newServer(listen, httpsRedirectHandler(parsedExternalURL))
+		httpsServer := newServer(tlsListen, router)
+		httpsServer.TLSConfig = &tls.Config{GetCertificate: certReloader.GetCertificate, MinVersion: tls.VersionTLS12}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -392,7 +419,9 @@ func Run(
 			logger.Debug("HTTP server closed")
 			exit <- struct{}{}
 		}()
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			<-ctx.Done()
 			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), ServerShutdownTimeout)
 			defer shutdownCancel()
@@ -412,7 +441,9 @@ func Run(
 			logger.Debug("HTTPS server closed")
 			exit <- struct{}{}
 		}()
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			<-ctx.Done()
 			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), ServerShutdownTimeout)
 			defer shutdownCancel()
@@ -439,22 +470,10 @@ func Run(
 			},
 		}
 
-		httpServer := &http.Server{
-			Addr: listen,
-			Handler: m.HTTPHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				host := r.Host
-				if host == "" {
-					host = r.URL.Host
-				}
-				target := "https://" + host + r.RequestURI
-				http.Redirect(w, r, target, http.StatusMovedPermanently)
-			})),
-		}
-		httpsServer := &http.Server{
-			Addr:      tlsListen,
-			Handler:   router,
-			TLSConfig: m.TLSConfig(),
-		}
+		httpServer := newServer(listen, m.HTTPHandler(httpsRedirectHandler(parsedExternalURL)))
+		httpsServer := newServer(tlsListen, router)
+		httpsServer.TLSConfig = m.TLSConfig()
+		httpsServer.TLSConfig.MinVersion = tls.VersionTLS12
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -467,7 +486,9 @@ func Run(
 			logger.Debug("HTTP server closed")
 			exit <- struct{}{}
 		}()
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			<-ctx.Done()
 			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), ServerShutdownTimeout)
 			defer shutdownCancel()
@@ -488,7 +509,9 @@ func Run(
 			logger.Debug("HTTPS server closed")
 			exit <- struct{}{}
 		}()
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			<-ctx.Done()
 			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), ServerShutdownTimeout)
 			defer shutdownCancel()
@@ -497,10 +520,7 @@ func Run(
 			}
 		}()
 	} else {
-		httpServer := &http.Server{
-			Addr:    listen,
-			Handler: router,
-		}
+		httpServer := newServer(listen, router)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -512,7 +532,9 @@ func Run(
 			}
 			exit <- struct{}{}
 		}()
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			<-ctx.Done()
 			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), ServerShutdownTimeout)
 			defer shutdownCancel()
@@ -549,6 +571,46 @@ func Run(
 
 func sessionCookieSecure(externalURL *url.URL) bool {
 	return externalURL.Scheme == "https"
+}
+
+// sessionCookieName uses the __Host- prefix on https, which browsers only
+// accept for Secure, host-only cookies with Path=/ (no subdomain can set or
+// overwrite it).
+func sessionCookieName(externalURL *url.URL) string {
+	if sessionCookieSecure(externalURL) {
+		return "__Host-session"
+	}
+	return "session"
+}
+
+// newSessionStore returns the cookie store for the browser session. Cookies
+// are signed and encrypted with keys derived from the master secret, and
+// their server-side lifetime matches the cookie's.
+func newSessionStore(secret []byte, secure bool) (cookie.Store, error) {
+	authKey, err := utils.DeriveKey(secret, utils.KeyPurposeCookieAuth)
+	if err != nil {
+		return nil, err
+	}
+	encKey, err := utils.DeriveKey(secret, utils.KeyPurposeCookieEncrypt)
+	if err != nil {
+		return nil, err
+	}
+	store := cookie.NewStore(authKey, encKey)
+	store.Options(sessions.Options{
+		Path:     "/",
+		MaxAge:   sessionCookieMaxAge,
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+	})
+	// Options only sets the browser expiry; MaxAge also bounds how long the
+	// signed cookie is accepted by the server (default would be 30 days).
+	if m, ok := store.(interface{ MaxAge(int) }); ok {
+		m.MaxAge(sessionCookieMaxAge)
+	} else {
+		return nil, errors.New("session store does not support MaxAge")
+	}
+	return store, nil
 }
 
 // userInfoFieldsFromConfig extracts the top-level userinfo keys referenced

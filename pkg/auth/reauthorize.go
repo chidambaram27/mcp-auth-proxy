@@ -3,6 +3,7 @@ package auth
 import (
 	"encoding/json"
 	"slices"
+	"strings"
 
 	"github.com/gin-contrib/sessions"
 	"github.com/mattn/go-jsonpointer"
@@ -102,11 +103,11 @@ func (p *googleProvider) Reauthorize(userID string, facts map[string]any) bool {
 	if len(p.allowedUsers) == 0 && len(p.allowedWorkspaces) == 0 {
 		return true
 	}
-	if slices.Contains(p.allowedUsers, userID) {
+	if slices.Contains(p.allowedUsers, strings.ToLower(userID)) {
 		return true
 	}
 	hd, _ := facts["hd"].(string)
-	return hd != "" && slices.Contains(p.allowedWorkspaces, hd)
+	return hd != "" && slices.Contains(p.allowedWorkspaces, strings.ToLower(hd))
 }
 
 func (p *githubProvider) AuthzFacts(map[string]any) map[string]any {
